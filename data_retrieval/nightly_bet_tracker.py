@@ -144,6 +144,15 @@ def process_fills(fills):
         if not m_info: continue
         market = m_info.get("market", {})
 
+        # Get the date from the very first fill in this market group
+        # This represents when you first entered the trade
+        raw_date = fls[0].get("created_time", "")
+        if raw_date:
+            # Converts "2024-05-20T..." to "2024-05-20"
+            display_date = raw_date.split('T')[0]
+        else:
+            display_date = datetime.now().strftime("%Y-%m-%d")
+
         def extract_price(fill): 
             return float(fill.get("yes_price") or fill.get("no_price") or fill.get("price") or 0)
 
@@ -159,8 +168,9 @@ def process_fills(fills):
         avg_sell = sell_payout / total_qty if total_qty > 0 else 0
 
         pnl = (sell_payout - total_cost) if avg_sell > 0 else -total_cost
+        
         rows.append({
-            "Date": datetime.now().strftime("%Y-%m-%d"),
+            "Date": display_date, # Now uses the fill timestamp
             "Market": market.get("title", mt),
             "Status": "Cashed Out" if avg_sell > 0 else "LOST/OPEN",
             "Total_Bought_$": round(total_cost, 2),
