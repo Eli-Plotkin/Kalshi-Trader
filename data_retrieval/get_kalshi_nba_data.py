@@ -32,7 +32,7 @@ def parse_kalshi_date(date_str):
 
 def is_valid_nba_game(market):
     title = market.get('title', '').lower()
-    if " vs " not in title and " @" not in title and " vs." not in title:
+    if " vs " not in title and " @" not in title and " vs." not in title and " at " not in title:
         return False
     bad_keywords = ["season", "champion", "series", "mvp", "finals"]
     if any(k in title for k in bad_keywords):
