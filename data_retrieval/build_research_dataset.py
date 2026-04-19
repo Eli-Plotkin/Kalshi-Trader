@@ -143,11 +143,6 @@ def game_label_to_phase(game_label):
         return "PlayIn"
     if "First Round" in game_label or "Semifinals" in game_label or "Finals" in game_label:
         return "Playoffs"
-    if "Star" in game_label:
-        return game_label
-    if "Star" in game_label:
-        return game_label
-    
     _LOGGED_UNKNOWN_LABELS.add(game_label)
     print(f"Unrecognized game label '{game_label}', defaulting to Regular")
     return "Regular"
@@ -160,71 +155,35 @@ def describe_market_prefix(prefix):
 def describe_market_column(prefix, suffix):
     side_name = describe_market_prefix(prefix)
     descriptions = {
-        "market_ticker": f"Kalshi market ticker for the {side_name} side; assumed to be the YES market for that team winning.",
-        "team": f"Team name pulled from Kalshi yes_sub_title for the {side_name} side.",
-        "result": f"Kalshi settlement result for the {side_name} side; 'yes' means that team won.",
-        "candle_count": f"Number of one-minute candles retrieved for the {side_name} inside the pre-tip window.",
-        "candles_with_volume": f"Count of pre-tip candles with positive reported volume for the {side_name}; used as a liquidity sanity check.",
-        "total_volume": f"Sum of reported candle volume in the pre-tip window for the {side_name}; assumes Kalshi candle volume is reliable.",
-        "entry_ask_cents": f"First valid pre-tip YES ask for the {side_name}, in cents; assumes the first clean ask is the trade entry candidate.",
-        "entry_bid_cents": f"First valid pre-tip YES bid for the {side_name}, in cents; used to estimate entry spread.",
-        "entry_spread_cents": f"Entry ask minus entry bid for the {side_name}, in cents; a simple quoted spread estimate.",
-        "entry_ask_ts": f"Timestamp of the first valid pre-tip ask for the {side_name}.",
-        "entry_bid_ts": f"Timestamp of the first valid pre-tip bid for the {side_name}.",
-        "last_pre_tip_ask_cents": f"Last valid pre-tip YES ask seen for the {side_name}, in cents.",
-        "last_pre_tip_bid_cents": f"Last valid pre-tip YES bid seen for the {side_name}, in cents; quoted, not necessarily traded.",
-        "last_pre_tip_ask_ts": f"Timestamp of the last valid pre-tip ask for the {side_name}.",
-        "last_pre_tip_bid_ts": f"Timestamp of the last valid pre-tip bid for the {side_name}.",
-        "min_pre_tip_ask_cents": f"Lowest valid pre-tip YES ask for the {side_name}, in cents; quote-based, not volume-filtered.",
-        "max_pre_tip_ask_cents": f"Highest valid pre-tip YES ask for the {side_name}, in cents; quote-based, not volume-filtered.",
-        "min_pre_tip_bid_cents": f"Lowest valid pre-tip YES bid for the {side_name}, in cents; quote-based, not volume-filtered.",
-        "max_pre_tip_bid_cents": f"Highest valid pre-tip YES bid for the {side_name}, in cents; quote-based, not volume-filtered.",
-        "min_pre_tip_ask_ts": f"Timestamp of the lowest quoted pre-tip ask for the {side_name}.",
-        "max_pre_tip_ask_ts": f"Timestamp of the highest quoted pre-tip ask for the {side_name}.",
-        "min_pre_tip_bid_ts": f"Timestamp of the lowest quoted pre-tip bid for the {side_name}.",
-        "max_pre_tip_bid_ts": f"Timestamp of the highest quoted pre-tip bid for the {side_name}.",
-        "min_traded_pre_tip_bid_cents": f"Lowest pre-tip YES bid close for the {side_name} on candles with positive volume; used as a more realistic traded level.",
-        "max_traded_pre_tip_bid_cents": f"Highest pre-tip YES bid close for the {side_name} on candles with positive volume; used as a more realistic sellable level.",
-        "min_traded_pre_tip_bid_ts": f"Timestamp of the lowest volume-backed pre-tip bid close for the {side_name}.",
-        "max_traded_pre_tip_bid_ts": f"Timestamp of the highest volume-backed pre-tip bid close for the {side_name}.",
-        "ask_quote_count": f"Count of valid pre-tip ask quotes for the {side_name}; valid means strictly between 1 and 99 cents.",
-        "bid_quote_count": f"Count of valid pre-tip bid quotes for the {side_name}; valid means strictly between 1 and 99 cents.",
-        "traded_bid_quote_count": f"Count of valid pre-tip bid closes for the {side_name} on candles with positive volume.",
+        "market_ticker": f"Kalshi market ticker for the {side_name} side.",
+        "team": f"Team name from Kalshi yes_sub_title for the {side_name} side.",
+        "total_volume": f"Total contracts traded in the 180-minute pre-tip window for the {side_name}.",
+        "tipoff_ask_cents": f"YES ask price at tipoff for the {side_name}, in cents; taken from the last valid ask close at the pre-tip cutoff (15 min before adjusted tipoff, where adjusted tipoff = scheduled tipoff + 12 min).",
+        "depth_vol_at_ask": f"Traded volume in the window for the {side_name} on candles where the ask matched tipoff_ask_cents; proxy for available depth at tipoff.",
+        "depth_vol_at_ask_minus1": f"Traded volume for the {side_name} on candles where the ask was tipoff_ask_cents minus 1 cent; proxy for depth one tick below tipoff ask.",
+        "depth_vol_at_ask_minus2": f"Traded volume for the {side_name} on candles where the ask was tipoff_ask_cents minus 2 cents; proxy for depth two ticks below tipoff ask.",
     }
     return descriptions.get(suffix, f"{side_name.title()} field '{suffix}' generated by the research builder.")
 
 
 def describe_dataset_column(fieldname):
     base_descriptions = {
-        "Event_Ticker": "Unique Kalshi event ticker for the NBA game; used as the per-game primary key.",
-        "Date": "Game date from scheduled tip-off in UTC date format; not local arena time.",
-        "Game_Label": "NBA schedule label for the game, such as Regular Season or Play-In.",
-        "Game_Phase": "Normalized game phase: Preseason, Regular, PlayIn, Playoffs, or Finals.",
-        "Season": "NBA season identifier derived from game date, e.g. 2024-25 or 2025-26.",
-        "Days_To_Season_End": "Days between game date and last regular-season game date for that season.",
-        "Home_Team": "Home team tricode from the NBA schedule mapping.",
-        "Away_Team": "Away team tricode from the NBA schedule mapping.",
-        "Scheduled_Tipoff_UTC": "Official scheduled tip time from the NBA schedule in UTC.",
-        "Adjusted_Tipoff_UTC": "Scheduled tip plus a fixed 12-minute delay assumption to approximate real tip-off.",
-        "Window_Start_UTC": "Start of the research window in UTC; assumed to be 180 minutes before adjusted tip-off.",
-        "Window_End_UTC": "End of the research window in UTC; assumed to be 15 minutes before adjusted tip-off.",
-        "Window_Lookback_Minutes": "Configured lookback length for the pre-tip window in minutes.",
-        "Window_Cutoff_Minutes": "Configured cutoff before adjusted tip-off in minutes.",
-        "Favorite_Determined_By": "Rule used to label favorite versus underdog; higher entry ask implies higher implied win probability.",
-        "Und_Best_Bid_PreTip_PnL_Cents": "Underdog per-share PnL if bought at first valid ask and sold at the best volume-backed pre-tip bid close.",
-        "Und_Last_PreTip_Bid_PnL_Cents": "Underdog per-share PnL if bought at first valid ask and exited at the last quoted pre-tip bid.",
-        "Und_Hold_To_Settle_PnL_Cents": "Underdog per-share PnL if bought at first valid ask and held to settlement.",
-        "Favorite_Hold_To_Settle_PnL_Cents": "Favorite per-share PnL if bought at first valid ask and held to settlement.",
-        "Fav_Low_Ask_PreTip_Cents": "Lowest quoted pre-tip ask for the favorite, in cents.",
-        "Fav_Low_Bid_PreTip_Cents": "Lowest volume-backed pre-tip bid close for the favorite, in cents.",
-        "Favorite_Won": "Boolean settlement outcome for the favorite side.",
-        "Underdog_Won": "Boolean settlement outcome for the underdog side.",
+        "Event_Ticker": "Kalshi event ticker; unique identifier for the game.",
+        "Date": "Scheduled tipoff date in UTC.",
+        "Game_Phase": "Game phase derived from NBA schedule label: Regular, PlayIn, Playoffs, Finals, or Preseason.",
+        "Season": "NBA season, e.g. 2024-25 or 2025-26.",
+        "Days_To_Season_End": "Days from game date to the last regular-season game of that season; negative for postseason games.",
+        "Home_Team": "Home team tricode.",
+        "Away_Team": "Away team tricode.",
+        "Scheduled_Tipoff_UTC": "Official scheduled tipoff time in UTC from the NBA schedule.",
+        "Adjusted_Tipoff_UTC": "Scheduled tipoff plus 12 minutes to approximate actual tip; used to define the candle window.",
+        "Window_Start_UTC": "Start of the pre-tip candle window; 180 minutes before adjusted tipoff.",
+        "Window_End_UTC": "End of the pre-tip candle window; 15 minutes before adjusted tipoff (approximately at tip).",
+        "Favorite_Hold_To_Settle_PnL_Cents": "Favorite per-share PnL if entered at fav_tipoff_ask_cents and held to settlement; (100 - entry) if won, (-entry) if lost.",
+        "Favorite_Won": "True if the favorite's Kalshi YES contract settled at $1.",
     }
     if fieldname in base_descriptions:
         return base_descriptions[fieldname]
-    if fieldname.startswith("Und_Target_") and fieldname.endswith("_Hit_PreTip"):
-        target = fieldname.replace("Und_Target_", "").replace("_Hit_PreTip", "")
-        return f"Boolean flag showing whether the underdog's best volume-backed pre-tip bid improved by at least {target.replace('c', '')} cents from entry."
     if fieldname.startswith("fav_"):
         return describe_market_column("fav", fieldname[len("fav_"):])
     if fieldname.startswith("und_"):
@@ -780,6 +739,37 @@ def summarize_price_series(candles, side_key):
     return summary
 
 
+def compute_depth_proxy(candles):
+    """
+    Proxy for order book depth at the last pre-tip ask price.
+    Sums traded volume across the window for candles where the yes_ask
+    close was at last_ask, last_ask-1, and last_ask-2.
+    """
+    last_ask = None
+    for candle in reversed(candles):
+        price = get_candle_price(candle.get("yes_ask", {}), "close")
+        if is_valid_quote_price(price):
+            last_ask = price
+            break
+
+    if last_ask is None:
+        return {"tipoff_ask_cents": None, "depth_vol_at_ask": 0.0,
+                "depth_vol_at_ask_minus1": 0.0, "depth_vol_at_ask_minus2": 0.0}
+
+    vol = {last_ask: 0.0, last_ask - 1: 0.0, last_ask - 2: 0.0}
+    for candle in candles:
+        price = get_candle_price(candle.get("yes_ask", {}), "close")
+        if price in vol:
+            vol[price] += get_candle_volume(candle)
+
+    return {
+        "tipoff_ask_cents": last_ask,
+        "depth_vol_at_ask": round(vol[last_ask], 4),
+        "depth_vol_at_ask_minus1": round(vol[last_ask - 1], 4),
+        "depth_vol_at_ask_minus2": round(vol[last_ask - 2], 4),
+    }
+
+
 def summarize_market_window(candles):
     candle_count = len(candles)
     candles_with_volume = sum(1 for candle in candles if get_candle_volume(candle) > 0)
@@ -803,12 +793,13 @@ def summarize_market_window(candles):
         "entry_ask_cents": entry_ask,
         "entry_bid_cents": entry_bid,
         "entry_spread_cents": entry_spread,
+        "depth": compute_depth_proxy(candles),
     }
 
 
 def choose_favorite_and_underdog(market_a, market_b, summary_a, summary_b):
-    ask_a = summary_a["entry_ask_cents"]
-    ask_b = summary_b["entry_ask_cents"]
+    ask_a = summary_a["depth"]["tipoff_ask_cents"]
+    ask_b = summary_b["depth"]["tipoff_ask_cents"]
 
     if ask_a is None or ask_b is None:
         return None
@@ -847,39 +838,15 @@ def settlement_pnl_cents(entry_ask_cents, won_market):
 
 
 def add_market_summary(row, prefix, market, summary):
-    ask = summary["ask"]
-    bid = summary["bid"]
+    depth = summary["depth"]
 
     row[f"{prefix}_market_ticker"] = market.get("ticker")
     row[f"{prefix}_team"] = market.get("yes_sub_title")
-    row[f"{prefix}_result"] = market.get("result")
-    row[f"{prefix}_candle_count"] = summary["candle_count"]
-    row[f"{prefix}_candles_with_volume"] = summary["candles_with_volume"]
     row[f"{prefix}_total_volume"] = summary["total_volume"]
-    row[f"{prefix}_entry_ask_cents"] = summary["entry_ask_cents"]
-    row[f"{prefix}_entry_bid_cents"] = summary["entry_bid_cents"]
-    row[f"{prefix}_entry_spread_cents"] = summary["entry_spread_cents"]
-    row[f"{prefix}_entry_ask_ts"] = ask["first_open_ts"]
-    row[f"{prefix}_entry_bid_ts"] = bid["first_open_ts"]
-    row[f"{prefix}_last_pre_tip_ask_cents"] = ask["last_close_cents"]
-    row[f"{prefix}_last_pre_tip_bid_cents"] = bid["last_close_cents"]
-    row[f"{prefix}_last_pre_tip_ask_ts"] = ask["last_close_ts"]
-    row[f"{prefix}_last_pre_tip_bid_ts"] = bid["last_close_ts"]
-    row[f"{prefix}_min_pre_tip_ask_cents"] = ask["min_open_cents"]
-    row[f"{prefix}_max_pre_tip_ask_cents"] = ask["max_open_cents"]
-    row[f"{prefix}_min_pre_tip_bid_cents"] = bid["min_close_cents"]
-    row[f"{prefix}_max_pre_tip_bid_cents"] = bid["max_close_cents"]
-    row[f"{prefix}_min_pre_tip_ask_ts"] = ask["min_open_ts"]
-    row[f"{prefix}_max_pre_tip_ask_ts"] = ask["max_open_ts"]
-    row[f"{prefix}_min_pre_tip_bid_ts"] = bid["min_close_ts"]
-    row[f"{prefix}_max_pre_tip_bid_ts"] = bid["max_close_ts"]
-    row[f"{prefix}_min_traded_pre_tip_bid_cents"] = bid["min_traded_close_cents"]
-    row[f"{prefix}_max_traded_pre_tip_bid_cents"] = bid["max_traded_close_cents"]
-    row[f"{prefix}_min_traded_pre_tip_bid_ts"] = bid["min_traded_close_ts"]
-    row[f"{prefix}_max_traded_pre_tip_bid_ts"] = bid["max_traded_close_ts"]
-    row[f"{prefix}_ask_quote_count"] = ask["quote_count"]
-    row[f"{prefix}_bid_quote_count"] = bid["quote_count"]
-    row[f"{prefix}_traded_bid_quote_count"] = bid["traded_close_count"]
+    row[f"{prefix}_tipoff_ask_cents"] = depth["tipoff_ask_cents"]
+    row[f"{prefix}_depth_vol_at_ask"] = depth["depth_vol_at_ask"]
+    row[f"{prefix}_depth_vol_at_ask_minus1"] = depth["depth_vol_at_ask_minus1"]
+    row[f"{prefix}_depth_vol_at_ask_minus2"] = depth["depth_vol_at_ask_minus2"]
 
 
 def build_research_row(event_ticker, pair, game_metadata, summaries, season_date_ranges):
@@ -895,18 +862,12 @@ def build_research_row(event_ticker, pair, game_metadata, summaries, season_date
     underdog_market = role_map["underdog_market"]
     underdog_summary = role_map["underdog_summary"]
 
-    underdog_entry = underdog_summary["entry_ask_cents"]
-    underdog_best_bid = underdog_summary["bid"]["max_traded_close_cents"]
-    underdog_last_bid = underdog_summary["bid"]["last_close_cents"]
-    favorite_entry = favorite_summary["entry_ask_cents"]
-    favorite_low_ask = favorite_summary["ask"]["min_open_cents"]
-    favorite_low_bid = favorite_summary["bid"]["min_traded_close_cents"]
+    favorite_entry = favorite_summary["depth"]["tipoff_ask_cents"]
 
     game_date = game_metadata["scheduled_tipoff_utc"].date()
     row = {
         "Event_Ticker": event_ticker,
         "Date": game_date.isoformat(),
-        "Game_Label": game_metadata["game_label"],
         "Game_Phase": game_label_to_phase(game_metadata["game_label"]),
         "Season": season_string_for_date(game_date),
         "Days_To_Season_End": (
@@ -924,46 +885,11 @@ def build_research_row(event_ticker, pair, game_metadata, summaries, season_date
         "Window_End_UTC": (
             game_metadata["adjusted_tipoff_utc"] - timedelta(minutes=PRE_TIP_CUTOFF_MINUTES)
         ).isoformat(),
-        "Window_Lookback_Minutes": PRE_TIP_LOOKBACK_MINUTES,
-        "Window_Cutoff_Minutes": PRE_TIP_CUTOFF_MINUTES,
-        "Favorite_Determined_By": "highest_entry_ask_then_highest_entry_bid",
-        "Und_Best_Bid_PreTip_PnL_Cents": (
-            underdog_best_bid - underdog_entry
-            if underdog_entry is not None and underdog_best_bid is not None
-            else None
-        ),
-        "Und_Last_PreTip_Bid_PnL_Cents": (
-            underdog_last_bid - underdog_entry
-            if underdog_entry is not None and underdog_last_bid is not None
-            else None
-        ),
-        "Und_Hold_To_Settle_PnL_Cents": settlement_pnl_cents(
-            underdog_entry,
-            underdog_market.get("result") == "yes",
-        ),
         "Favorite_Hold_To_Settle_PnL_Cents": settlement_pnl_cents(
             favorite_entry,
             favorite_market.get("result") == "yes",
         ),
-        "Und_Target_5c_Hit_PreTip": (
-            underdog_best_bid is not None
-            and underdog_entry is not None
-            and (underdog_best_bid - underdog_entry) >= 5
-        ),
-        "Und_Target_10c_Hit_PreTip": (
-            underdog_best_bid is not None
-            and underdog_entry is not None
-            and (underdog_best_bid - underdog_entry) >= 10
-        ),
-        "Und_Target_15c_Hit_PreTip": (
-            underdog_best_bid is not None
-            and underdog_entry is not None
-            and (underdog_best_bid - underdog_entry) >= 15
-        ),
-        "Fav_Low_Ask_PreTip_Cents": favorite_low_ask,
-        "Fav_Low_Bid_PreTip_Cents": favorite_low_bid,
         "Favorite_Won": favorite_market.get("result") == "yes",
-        "Underdog_Won": underdog_market.get("result") == "yes",
     }
 
     add_market_summary(row, "fav", favorite_market, favorite_summary)
@@ -1008,7 +934,7 @@ def process_event_pair(event_ticker, pair, schedule_index, season_date_ranges, c
     summary_a = summarize_market_window(candles_a)
     summary_b = summarize_market_window(candles_b)
 
-    if summary_a["entry_ask_cents"] is None or summary_b["entry_ask_cents"] is None:
+    if summary_a["depth"]["tipoff_ask_cents"] is None or summary_b["depth"]["tipoff_ask_cents"] is None:
         return None
 
     row, reason = build_research_row(

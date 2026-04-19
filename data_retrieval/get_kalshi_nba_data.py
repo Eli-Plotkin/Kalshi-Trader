@@ -13,6 +13,7 @@ CSV_FILENAME = "kalshi_nba_arbitrage_data.csv"
 SERIES_TICKER = "KXNBAGAME"
 BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
 MAX_WORKERS = 30  # I/O bound; 50 caused timeouts, 30 is the sweet spot
+MAX_CANDLE_WORKERS_PER_EVENT = 2
 
 # Thread-local session for connection reuse across requests
 _local = threading.local()
