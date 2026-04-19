@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 import requests
 import pandas as pd
 import time
@@ -99,7 +100,6 @@ def get_candlesticks(market_ticker, start_time, closed_time):
     for attempt in range(max_retries):
         try:
             response = get_session().get(url, params=params)
-
             if response.status_code == 200:
                 return response.json().get("candlesticks", [])
 
@@ -110,14 +110,20 @@ def get_candlesticks(market_ticker, start_time, closed_time):
                 continue
 
             else:
-                print(f"    Error {response.status_code} for {market_ticker}")
+                print(f"Error {response.status_code} for {market_ticker}")
                 return []
 
         except Exception as e:
             print(f"Got Exception {e} in get_candlesticks")
             return []
-
     return []
+
+
+def fetch_event_candles(market_a_ticker, market_b_ticker, start_time, closed_time):
+    with ThreadPoolExecutor(max_workers=MAX_CANDLE_WORKERS_PER_EVENT) as executor:
+        future_a = executor.submit(get_candlesticks, market_a_ticker, start_time, closed_time)
+        future_b = executor.submit(get_candlesticks, market_b_ticker, start_time, closed_time)
+        return future_a.result(), future_b.result()
 
 def to_epoch(iso_string):
     if not iso_string:
@@ -129,8 +135,24 @@ def to_epoch(iso_string):
         return int(time.time())
 
 def get_safe_max(candles):
-    valid_highs = [c['yes_bid']['high'] for c in candles if c['yes_bid']['high'] > 0]
-    return max(valid_highs) if valid_highs else 0
+    """
+    Returns the maximum realistic price you could have sold at.
+    Uses 'close' price instead of 'high' to filter out 1-second wicks.
+    Checks for non-zero volume.
+    """
+    valid_prices = []
+    for c in candles:
+        # We are SELLING, so we look at the BID side.
+        bid_data = c.get('yes_bid', {})
+        close_price = get_candle_price(bid_data, 'close')
+        
+        # Filter: Volume must exist (price wasn't just a quote, it traded)
+        if get_candle_volume(c) > 0 and close_price > 0:
+            # Use CLOSE, not HIGH. 
+            # High is often a trap. Close means it stayed there.
+            valid_prices.append(close_price)
+            
+    return max(valid_prices) if valid_prices else 0
 
 def fetch_all_candlesticks(tasks):
     """Submit all candlestick requests to a single flat thread pool (no nested pools)."""
@@ -231,6 +253,12 @@ def main():
 
     markets = get_settled_markets(existing_tickers=existing_tickers)
     event_ticker_to_data = defaultdict(list)
+    nba_league_schedule = get_season_schedule_map()
+    seen_game_keys = set()
+
+    if not nba_league_schedule:
+        print("ERROR: Bad nba schedule")
+        return
 
     for market in markets:
         if not is_valid_nba_game(market):
@@ -238,6 +266,8 @@ def main():
         if market['event_ticker'] in existing_tickers:
             continue
         event_ticker_to_data[market['event_ticker']].append(market)
+        if len(event_ticker_to_data[market['event_ticker']]) == 2 and game_key != (None, None):
+            seen_game_keys.add(game_key)
 
     tasks = [pair for pair in event_ticker_to_data.values() if len(pair) == 2]
     print(f"Processing {len(tasks)} new game pairs...")

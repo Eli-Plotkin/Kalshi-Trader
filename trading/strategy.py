@@ -2,7 +2,6 @@ from datetime import datetime, timezone
 from client import KalshiClient
 import time
 import logging
-from nba_scheduler import get_tip_off_time
 
 def is_market_open(market_schedule):
     """Checks if now is between the configured start and end hours."""
@@ -45,6 +44,7 @@ def is_pre_game(target_team_tri, today_schedule):
             # gameEt is local time but often has a confusing 'Z' suffix.
 
             raw_time = game.get('gameTimeUTC')
+            break
 
 
     if not raw_time:

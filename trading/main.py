@@ -6,7 +6,6 @@ from logging.handlers import RotatingFileHandler
 import sys
 from client import KalshiClient
 from portfolio import Portfolio
-from datetime import datetime
 import nba_scheduler
 
 logging.basicConfig(
