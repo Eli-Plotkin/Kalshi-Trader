@@ -5,7 +5,7 @@ import uuid
 import logging
 from urllib.parse import urlparse
 from cryptography.hazmat.primitives import serialization, hashes
-from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
 from cryptography.hazmat.backends import default_backend
 
 class KalshiClient:
@@ -42,7 +42,7 @@ class KalshiClient:
         
         signature = self.private_key.sign(
             msg.encode('utf-8'),
-            padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH),
+            asym_padding.PSS(mgf=asym_padding.MGF1(hashes.SHA256()), salt_length=asym_padding.PSS.DIGEST_LENGTH),
             hashes.SHA256()
         )
         
@@ -84,11 +84,11 @@ class KalshiClient:
             if resp.status_code == 404:
                 return None
             resp.raise_for_status()
-            return resp.json().get("orderbook", {})
+            return resp.json().get("orderbook_fp", {})
         except Exception as e:
             return None
 
-    def place_limit_order(self, ticker, count, price, action="buy"):
+    def place_limit_order(self, ticker, count, price, action="buy", expiration_ts=None):
         path = "/portfolio/orders"
         client_order_id = str(uuid.uuid4())
         safe_price = int(price)
@@ -97,11 +97,14 @@ class KalshiClient:
             "ticker": ticker,
             "action": action,
             "side": "yes",
-            "type": "limit",
             "count": count,
             "client_order_id": client_order_id,
-            "yes_price": safe_price 
+            "yes_price": safe_price
         }
+
+        # expiration_ts: unix milliseconds. Order auto-cancels at tip-off if unfilled.
+        if expiration_ts is not None:
+            payload["expiration_ts"] = int(expiration_ts)
         
         headers = self._sign_request("POST", path)
         

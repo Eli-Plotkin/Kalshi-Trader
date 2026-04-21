@@ -25,6 +25,18 @@ class Portfolio:
     def has_position(self, ticker):
         return ticker in self._positions
 
+    def remove_position(self, ticker):
+        if ticker in self._positions:
+            del self._positions[ticker]
+            self._save_to_disk()
+            logging.info(f"Portfolio: Removed {ticker}")
+
+    def update_position_qty(self, ticker, qty):
+        if ticker in self._positions and self._positions[ticker]:
+            self._positions[ticker][-1]['qty'] = qty
+            self._save_to_disk()
+            logging.info(f"Portfolio: Updated {ticker} qty to {qty}")
+
     def _save_to_disk(self):
         try:
             with open(self.filename, 'w') as f:
