@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
-from tip_off_time import parse_event_ticker
+from data_retrieval.helpers import parse_event_ticker
 
 # Research dataset configuration.
 SERIES_TICKER = "KXNBAGAME"
