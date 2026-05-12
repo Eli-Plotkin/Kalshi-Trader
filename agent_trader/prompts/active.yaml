@@ -1,0 +1,12 @@
+# Active prompt versions. User-edited toggle file.
+# Reflection writes proposed v(N+1) prompts to data/proposed_prompts/.
+# To activate one, copy it into this dir and bump the pointer below.
+# Every cycle snapshots this file into the chain_log so logs are reproducible.
+
+assumptions: assumptions_v1.md
+triage: triage_v1.md
+research_plan: research_plan_v1.md
+decision_framework: decision_framework_v1.md
+decider: decider_v1.md
+research_subagent: research_subagent_v1.md
+reflection: reflection_v1.md

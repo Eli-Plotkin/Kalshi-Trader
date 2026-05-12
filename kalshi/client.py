@@ -71,6 +71,59 @@ class KalshiClient:
             logging.error(f"Error fetching markets: {e}")
             return []
 
+    def list_markets(self, status="open", limit=200, cursor=None, **extra_params):
+        """Generic paginated market list. Returns (markets, next_cursor)."""
+        path = "/markets"
+        headers = self._sign_request("GET", path)
+        params = {"limit": limit, "status": status, **extra_params}
+        if cursor:
+            params["cursor"] = cursor
+        try:
+            resp = self.session.get(f"{self.base_url}{path}", headers=headers, params=params)
+            resp.raise_for_status()
+            body = resp.json()
+            return body.get("markets", []), body.get("cursor") or None
+        except Exception as e:
+            logging.error(f"list_markets failed: {e}")
+            return [], None
+
+    def get_balance(self):
+        """Returns available cash in cents, or None on error."""
+        path = "/portfolio/balance"
+        headers = self._sign_request("GET", path)
+        try:
+            resp = self.session.get(f"{self.base_url}{path}", headers=headers)
+            resp.raise_for_status()
+            return resp.json().get("balance")
+        except Exception as e:
+            logging.error(f"get_balance failed: {e}")
+            return None
+
+    def list_positions(self):
+        """Returns list of current market positions."""
+        path = "/portfolio/positions"
+        headers = self._sign_request("GET", path)
+        try:
+            resp = self.session.get(f"{self.base_url}{path}", headers=headers)
+            resp.raise_for_status()
+            return resp.json().get("market_positions", [])
+        except Exception as e:
+            logging.error(f"list_positions failed: {e}")
+            return []
+
+    def get_market(self, ticker):
+        """Single-market fetch. Returns the market dict (with prices, status,
+        result on settled markets) or None on error."""
+        path = f"/markets/{ticker}"
+        headers = self._sign_request("GET", path)
+        try:
+            resp = self.session.get(f"{self.base_url}{path}", headers=headers)
+            resp.raise_for_status()
+            return resp.json().get("market")
+        except Exception as e:
+            logging.error(f"get_market({ticker}) failed: {e}")
+            return None
+
     def get_orderbook(self, ticker):
         """Gets the orderbook to calculate the spread."""
         path = f"/markets/{ticker}/orderbook"
@@ -88,19 +141,32 @@ class KalshiClient:
         except Exception as e:
             return None
 
-    def place_limit_order(self, ticker, count, price, action="buy", expiration_ts=None):
+    def place_limit_order(
+        self,
+        ticker,
+        count,
+        price,
+        action="buy",
+        side="yes",
+        expiration_ts=None,
+        client_order_id=None,
+    ):
         path = "/portfolio/orders"
-        client_order_id = str(uuid.uuid4())
+        client_order_id = client_order_id or str(uuid.uuid4())
         safe_price = int(price)
 
         payload = {
             "ticker": ticker,
             "action": action,
-            "side": "yes",
+            "side": side,
             "count": count,
             "client_order_id": client_order_id,
-            "yes_price": safe_price
         }
+        # Kalshi requires yes_price for side=yes, no_price for side=no
+        if side == "yes":
+            payload["yes_price"] = safe_price
+        else:
+            payload["no_price"] = safe_price
 
         # expiration_ts: unix milliseconds. Order auto-cancels at tip-off if unfilled.
         if expiration_ts is not None:

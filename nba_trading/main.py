@@ -8,11 +8,10 @@ from logging.handlers import RotatingFileHandler
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.date import DateTrigger
 
-import config
-import strategy
-from client import KalshiClient
-from portfolio import Portfolio
-import nba_scheduler
+from kalshi.client import KalshiClient
+from kalshi.config import API_KEY_ID, BASE_URL, PRIVATE_KEY_PATH
+from nba_trading import config, strategy, nba_scheduler
+from nba_trading.portfolio import Portfolio
 
 logging.basicConfig(
     level=logging.INFO,
@@ -265,9 +264,9 @@ def setup_daily_schedule(client, portfolio, scheduler):
 
 def run_bot():
     client = KalshiClient(
-        base_url=config.BASE_URL,
-        key_id=config.API_KEY_ID,
-        key_file_path=config.PRIVATE_KEY_PATH
+        base_url=BASE_URL,
+        key_id=API_KEY_ID,
+        key_file_path=PRIVATE_KEY_PATH
     )
     portfolio = Portfolio()
 
