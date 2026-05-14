@@ -9,10 +9,10 @@ runs the search loop on its side and returns:
   - terminal `text` block(s)   — the final JSON `Findings` payload
 
 We:
-  1. Pre-check the budget (token cost only — see TODO #3 for web_search dollars).
+  1. Pre-check the budget.
   2. Make the call with tool_choice="auto" and `max_uses = plan.tool_call_budget`.
   3. Count `server_tool_use` blocks → `tool_calls_used`.
-  4. Add token cost (+ per-search cost estimate) to the BudgetCounter.
+  4. Add token cost + per-search cost (runtime.TOOL_COST_USD_PER_CALL) to BudgetCounter.
   5. Parse + validate the final text against `schemas.Findings`.
 
 Returns `(findings, usage_dict)`. Raises `BudgetExhausted` / `MalformedLLMResponse`
@@ -34,10 +34,6 @@ log = logging.getLogger("agent_trader.research_agent")
 
 
 MODEL_RESEARCH = "claude-sonnet-4-6"
-
-# Anthropic public pricing as of design-doc date. Verify before going live.
-# TODO #3: confirm exact figure and surface in runtime.MODEL_RATES_PER_MTOK.
-WEB_SEARCH_COST_USD_PER_CALL = 0.010  # $10 per 1000 searches
 
 WEB_SEARCH_TOOL_TYPE = "web_search_20250305"
 WEB_SEARCH_TOOL_NAME = "web_search"
@@ -116,7 +112,7 @@ def run_research(
     out_t = getattr(resp.usage, "output_tokens", 0)
     token_cost = runtime.estimate_cost_usd(MODEL_RESEARCH, in_t, out_t)
     tool_calls_used = _count_tool_uses(resp.content)
-    search_cost = tool_calls_used * WEB_SEARCH_COST_USD_PER_CALL
+    search_cost = runtime.estimate_tool_cost_usd(WEB_SEARCH_TOOL_NAME, tool_calls_used)
     total_cost = token_cost + search_cost
     budget.add(total_cost)
 

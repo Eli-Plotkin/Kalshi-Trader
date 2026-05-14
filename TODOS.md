@@ -4,19 +4,14 @@ Deferred work captured during plan reviews. Each item carries enough context to 
 
 ---
 
-## 1. Tighten killswitch trigger latency
+## 1. Tighten killswitch trigger latency — DONE (2026-05-14)
 
-**What:** Add a time-windowed killswitch trigger to `runtime.py` alongside the existing cycle-counted rules.
+Both rules live in [agent_trader/runtime.py](agent_trader/runtime.py):
+- `max_consecutive_api_error_cycles ≥ 3` (slow rule).
+- `max_errors_within_30m ≥ 5` (fast rule, rolling-window timestamps trimmed in `note_api_error`).
 
-**Why:** Current spec halts after "3 consecutive cycles with API errors." At the default 30-min cadence, that's 90 minutes of unattended drift on a broken state — too loose for a fund-and-forget posture.
-
-**Pros:** Bursty transient failures halt fast; small code change.
-**Cons:** Slightly noisier — short outages will trip more often.
-
-**Proposed rule:** halt on `(3 consecutive cycles with API errors) OR (5 errors within any 30-min window)`, whichever fires first.
-
-**Context:** See `Killswitch` paragraph in design doc. Trigger lives in `runtime.py`.
-**Depends on:** `runtime.py` implementation (Day 1 in build order).
+Counters populated by [agent_trader/orchestrator.py](agent_trader/orchestrator.py) `run_cycle`:
+`note_api_error()` on every Kalshi failure (reconcile, discover, per-market exception); `note_cycle_api_status(had_errors)` on every cycle exit path.
 
 ---
 
@@ -27,113 +22,51 @@ Deferred work captured during plan reviews. Each item carries enough context to 
 **Why:** When 5+ correlated markets in one cycle want the same fact (e.g. "today's Spurs injury report"), the research subagent web-searches it that many times. With the triage agent surfacing top-N by likely mispricing, correlated clusters are likely.
 
 **Pros:** Cuts duplicate web_search costs; cheap implementation (dict cleared at cycle boundary).
-**Cons:** Cache normalization is fiddly — "Spurs injury report" vs "Spurs injuries today" may not hash the same; LLM-driven query normalization adds its own cost.
+**Cons:** Cache normalization is fiddly — "Spurs injury report" vs "Spurs injuries today" may not hash the same; LLM-driven query normalization adds its own cost. Mitigate by query normalization with cheap model (haiku).
 
 **Context:** `research_agent.py`. Reflection's cost-per-cycle logs will show whether this is worth building — defer until you see the duplicate-query waste in chain logs.
 **Depends on:** `research_agent.py` initial implementation (Day 3).
 
 ---
 
-## 3. Web search tool cost & rate-limit audit
+## 3. Web search tool cost & rate-limit audit — DONE (2026-05-14)
 
-**What:** Document Anthropic web_search tool per-call cost and rate limits in `agent_trader/llm.py` config alongside the per-MTok rates.
-
-**Why:** The budget-enforcement wrapper (per design doc) converts tokens → dollars but doesn't yet account for web_search call cost. With 20 markets × multiple searches each, this is a real cost component.
-
-**Context:** Budget enforcement paragraph in design doc.
-**Depends on:** `llm.py` wrapper implementation.
+- `web_search` priced at $0.010/call ($10 per 1,000 searches), per
+  [Anthropic web search tool docs](https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/web-search-tool).
+- Constant consolidated into `runtime.TOOL_COST_USD_PER_CALL` alongside `MODEL_RATES_PER_MTOK`,
+  with a helper `runtime.estimate_tool_cost_usd(tool_name, call_count)`.
+- `research_agent.py` no longer carries its own pricing constant — calls
+  `runtime.estimate_tool_cost_usd("web_search", n)` and bills the BudgetCounter.
+- Rate limits intentionally NOT codified: they're org-level and shared with other tools.
+  If a call 429s, it surfaces through the killswitch via `note_api_error()` rather than
+  being pre-throttled here.
 
 ---
 
-## 4. Naming-convention cleanup pass
+## 4. Naming-convention cleanup pass — CLOSED
 
-**What:** Resolve ambiguous, inconsistent, or collision-prone names across the codebase. Each item below stands on its own — pick them off individually.
+Reviewed 2026-05-14. The 22 items audited individually. Outcomes:
 
-**Why:** Code currently mixes verbs, units, and abbreviations for the same concepts. Anyone (including future-you) reading cold has to keep a translation table in their head. The list below is what survived a full read-through where the convention was *not* absolutely clear.
+**Fixed in this pass:**
+- 4.1 — `get_tip_off_time` collision resolved by deleting the dead `data_retrieval/helpers.py` copy (zero callers).
+- 4.3 — `expiration_ts` unit conflict: docstring in [kalshi/client.py](kalshi/client.py) corrected to "unix seconds" to match the Kalshi v2 contract and the only caller in [nba_trading/main.py](nba_trading/main.py).
 
-### 4.1 Two functions named `get_tip_off_time` with different signatures
-- [data_retrieval/helpers.py:27](data_retrieval/helpers.py#L27) — `(event_ticker, league_schedule) -> (ts, label)`
-- [nba_trading/nba_scheduler.py:7](nba_trading/nba_scheduler.py#L7) — `(team_tri) -> utc_string`
-- Same name, different inputs, different return types. Rename one (e.g. `get_tip_off_ts_for_event` vs `get_tip_off_utc_for_team`).
+**Previously fixed (kept here for receipts):**
+- 4.2 — `run_bot` → `run_agent_trader` on the agent_trader side.
+- 4.4 — `*_cents` suffix added to agent_trader market fields.
+- 4.8 — `coid` → `client_order_id` in agent_trader/smoke.py.
+- 4.17 — `raw` → `raw_market_response` / `raw_order_response`.
+- 4.18 — `mark_cycle_skipped` → `skip_cycle`.
 
-### 4.2 Two functions named `run_bot` in different `main.py` files — DONE (agent_trader side; nba_trading stub left alone)
-- [agent_trader/main.py:4](agent_trader/main.py#L4) (stub)
-- [nba_trading/main.py:265](nba_trading/main.py#L265) (real)
-- Confusing when grepping. Rename to `run_agent_trader` / `run_nba_bot`.
-
-### 4.3 Timestamp suffix inconsistency: `_ts` vs `_epoch` vs no suffix
-- `market_close_epoch()` returns a Unix int — [data_retrieval/get_nba_volatility_data.py:66](data_retrieval/get_nba_volatility_data.py#L66)
-- `tip_off_ts`, `start_ts`, `end_ts`, `close_ts` elsewhere — same concept, different suffix.
-- `expiration_ts` is documented as "unix milliseconds" in [kalshi/client.py:158](kalshi/client.py#L158) but "unix seconds" in [nba_trading/main.py:122](nba_trading/main.py#L122). Unit conflict, not just naming — verify which is correct.
-- Standardize on `_ts_seconds` / `_ts_ms` (explicit unit) or pick one suffix and document the unit.
-
-### 4.4 Price/cents unit not always in the name — PARTIAL (agent_trader fields done; legacy nba_trading untouched)
-- `yes_ask_cents`, `no_ask_cents`, `price_cents` (clear) vs `yes_bid`, `yes_ask`, `last_price`, `ask_price`, `price`, `safe_price` (unit only knowable from context).
-- `EligibleMarket.yes_ask` is int cents — [agent_trader/market_discovery.py:14](agent_trader/market_discovery.py#L14) — but reads like a price-in-dollars.
-- Suffix every cents-valued field with `_cents`.
-
-### 4.5 Contract-count synonyms: `count`, `qty`, `shares`, `filled_count`, `SHARES_TO_BUY`, `position`
-- Kalshi API uses `count`. [nba_trading/portfolio.py](nba_trading/portfolio.py) uses `qty` and `shares`. [agent_trader/](agent_trader/) uses `count` and `filled_count`. Config uses `SHARES_TO_BUY`.
-- Pick one (`contracts` is unambiguous and matches the domain).
-
-### 4.6 Underdog abbreviation: `und_*` vs full word
-- `und_market`, `und_start`, `und_best`, `und_candles` alongside `fav_market`, `favorite_market`, `favorite_entry`.
-- Either abbreviate both (`fav_`/`und_`) or neither.
-- File: [data_retrieval/get_nba_volatility_data.py](data_retrieval/get_nba_volatility_data.py)
-
-### 4.7 Tricode vs full team name in fields named `home_team` / `away_team`
-- `Portfolio` and saved schedule JSON store tricodes ("LAL") under keys named `home_team` — [nba_trading/main.py:241](nba_trading/main.py#L241).
-- Either rename to `home_tricode` / `away_tricode`, or store full names.
-
-### 4.8 `coid` abbreviation — DONE
-- [agent_trader/smoke.py:90](agent_trader/smoke.py#L90) uses `coid` for `client_order_id`. Nowhere else in the project. Expand it.
-
-### 4.9 Verb inconsistency for HTTP retrieval: `fetch_*` vs `get_*` vs `list_*`
-- `fetch_nba_markets`, `fetch_json`, `fetch_paginated_markets`, `fetch_event_candles`, `fetch_schedule_payload`, `fetch_all_candlesticks`
-- `get_balance`, `get_orderbook`, `get_order_status`, `get_candlesticks`, `get_settled_markets`, `get_historical_cutoff`
-- `list_markets`, `list_positions`
-- Convention proposal: `list_*` for paginated collections, `get_*` for single resource, `fetch_*` internal-only helper. Standardize.
-
-### 4.10 `process_event_pair` vs `process_event_task`
-- Same conceptual action across two files; different verb. [data_retrieval/build_research_dataset.py:751](data_retrieval/build_research_dataset.py#L751) vs [data_retrieval/get_nba_volatility_data.py:304](data_retrieval/get_nba_volatility_data.py#L304). Pick one.
-
-### 4.11 Module names: `build_research_dataset.py` vs `get_nba_volatility_data.py`
-- Both build a CSV from Kalshi candles. Verb mismatch in filenames. Consider `build_*` for both.
-
-### 4.12 `MAX_WORKERS` unqualified
-- [data_retrieval/get_nba_volatility_data.py:16](data_retrieval/get_nba_volatility_data.py#L16) — bare `MAX_WORKERS = 30`. Sibling file uses qualified names (`MAX_EVENT_WORKERS`, `MAX_CANDLE_WORKERS_PER_EVENT`, etc.). Rename to `MAX_CANDLE_FETCH_WORKERS`.
-
-### 4.13 `existing_tickers` vs `existing_dataset_keys`
-- Same concept ("event tickers already in the CSV"), two different names across the two dataset builders. Unify.
-
-### 4.14 `SCHEDULE_FILE` is a filename, not a path
-- [kalshi/config.py:20](kalshi/config.py#L20). Compare with `HALT_FILE` in [agent_trader/runtime.py:23](agent_trader/runtime.py#L23) which is a `Path`. Either rename to `SCHEDULE_FILENAME` or make it a full path.
-
-### 4.15 `cycle_id` is a millisecond timestamp, not an opaque ID
-- [agent_trader/runtime.py:243](agent_trader/runtime.py#L243): `cycle_id = int(time.time() * 1000)`. The name implies an opaque PK; readers may assume monotonic counter. Either rename to `cycle_started_ms` or generate a real surrogate id.
-
-### 4.16 `Action` literal mixes two grammatical forms
-- `"buy_yes"`, `"buy_no"`, `"close_position"`, `"hold"`, `"skip"` — [agent_trader/schemas.py:8](agent_trader/schemas.py#L8). First two are `<verb>_<side>`; `close_position` is `<verb>_<object>`; `hold`/`skip` are bare verbs. Consider `"sell_yes"`/`"sell_no"` (explicit) instead of `close_position`, and treat `hold`/`skip` as distinct from action enum (they're no-ops).
-
-### 4.17 `raw` field on dataclasses — DONE
-- `EligibleMarket.raw`, `ExecutionResult.raw` — what does this contain? Rename to `raw_market_response` / `raw_order_response`.
-
-### 4.18 Open-cycle / close-cycle / mark-cycle-skipped naming pattern — DONE (renamed to `skip_cycle`)
-- `open_cycle`, `close_cycle`, `mark_cycle_skipped` — [agent_trader/runtime.py](agent_trader/runtime.py). Third one breaks the pattern. Either `skip_cycle` or rename the others to `mark_cycle_opened` / `mark_cycle_closed`.
-
-### 4.19 `tripped` vs `_shutdown_requested` private-state convention
-- `Killswitch.tripped` is public; module-level `_shutdown_requested` is underscore-prefixed. Two pieces of similar process-level state, two conventions. Pick one visibility rule.
-
-### 4.20 Volume parsing locals: `raw_volume` vs `vol`
-- [data_retrieval/build_research_dataset.py:77](data_retrieval/build_research_dataset.py#L77) uses `raw_volume`; [data_retrieval/get_nba_volatility_data.py:50](data_retrieval/get_nba_volatility_data.py#L50) uses `vol`. Same helper, different name.
-
-### 4.21 `get_safe_max` is unclear without docstring
-- [data_retrieval/get_nba_volatility_data.py:290](data_retrieval/get_nba_volatility_data.py#L290). "safe max" of what? Rename to `best_realistic_sell_price_cents` or `peak_yes_bid_close_cents`.
-
-### 4.22 `m_a`/`m_b`, `market_a`/`market_b`, `pair`
-- Generic "two markets per game" naming throughout dataset builders. Unclear whether `a`/`b` corresponds to home/away, yes/no, or arbitrary order. Rename to `home_market`/`away_market` or document the ordering invariant.
-
-**Context:** This is cosmetic but compounds. Group fixes by file when picking these up so each PR is small and reviewable.
+**Closed without fix (cost > value):**
+- 4.5, 4.6, 4.7, 4.9, 4.10, 4.13, 4.20, 4.22 — local cosmetic rewrites that would touch many call sites for marginal clarity gain. Each package is internally consistent.
+- 4.11 — module rename `get_nba_volatility_data.py` → `build_*`: breaking change against scripts users may run.
+- 4.12 — `MAX_WORKERS` is unambiguous in scope (single file, single use).
+- 4.14 — `SCHEDULE_FILE` is no longer in `kalshi/config.py`; moved to `nba_trading/config.py` during the segmentation pass and the name is fine in that scope.
+- 4.15 — `cycle_id` being opaque is the right design; readers should not depend on its ms-timestamp internals.
+- 4.16 — `Action` enum rename would require coordinated prompt updates (decider_v1 references `close_position`); revisit when prompts are next versioned.
+- 4.19 — `Killswitch.tripped` (public) vs `_shutdown_requested` (module-private) is correct: one is queried by scheduler logic, the other by signal handlers only.
+- 4.21 — `get_safe_max` already has a docstring explaining "best realistic sell price"; the local name is fine inside one file.
 
 ---
 

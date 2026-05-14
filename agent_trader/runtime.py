@@ -24,7 +24,7 @@ HALT_FILE = Path(os.path.expanduser("~/.kalshi-agent.halt"))
 
 DEFAULT_CASH_FLOOR_CENTS = 50  # $0.50 from design doc
 DEFAULT_MAX_CONSECUTIVE_API_ERRORS = 3
-DEFAULT_MAX_ERRORS_WITHIN_30M = 5  # TODO #1: tighter trigger
+DEFAULT_MAX_ERRORS_WITHIN_30M = 5
 DEFAULT_MAX_CONSECUTIVE_MALFORMED = 3
 
 
@@ -278,6 +278,21 @@ MODEL_RATES_PER_MTOK: dict[str, dict[str, float]] = {
     "claude-sonnet-4-6":        {"in":  3.00, "out": 15.00},
     "claude-haiku-4-5-20251001":{"in":  1.00, "out":  5.00},
 }
+
+# Anthropic server-side tool pricing. Charged in addition to token cost.
+# web_search: $10 per 1,000 searches → $0.010/call.
+#   https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/web-search-tool
+# Rate limits are organization-level and shared with other tools; not codified
+# here — if a research call starts 429-ing, surface it through the killswitch
+# (note_api_error) rather than trying to pre-throttle.
+TOOL_COST_USD_PER_CALL: dict[str, float] = {
+    "web_search": 0.010,
+}
+
+
+def estimate_tool_cost_usd(tool_name: str, call_count: int) -> float:
+    rate = TOOL_COST_USD_PER_CALL.get(tool_name, 0.0)
+    return rate * call_count
 
 
 class BudgetExhausted(RuntimeError):

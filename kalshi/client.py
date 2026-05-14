@@ -168,7 +168,7 @@ class KalshiClient:
         else:
             payload["no_price"] = safe_price
 
-        # expiration_ts: unix milliseconds. Order auto-cancels at tip-off if unfilled.
+        # expiration_ts: unix seconds (Kalshi v2). Order auto-cancels at this time if unfilled.
         if expiration_ts is not None:
             payload["expiration_ts"] = int(expiration_ts)
         
