@@ -52,12 +52,16 @@ ACTIVE_YAML = PROMPTS_DIR / "active.yaml"
 # ────────────────────────────────────────────────────────────────────────────
 
 # Roles whose system prompts are stable enough to benefit from Anthropic
-# ephemeral prompt caching. We EXCLUDE research_plan + decision_framework
-# because reflection rewrites them — caching a prefix that turns over daily
-# burns the 1.25× write multiplier with no read amortization.
+# ephemeral prompt caching. The 5-minute cache TTL is what matters here, not
+# how often reflection rewrites a prompt — caching pays off any time the same
+# system prefix is reused within the TTL. research_plan + decision_framework
+# are called once per market with an identical system prompt, so the 5 markets
+# in a cycle amortize the 1.25× write across 4 reads at 0.10×.
 CACHEABLE_PROMPTS: frozenset[str] = frozenset({
     "assumptions",
     "triage",
+    "research_plan",
+    "decision_framework",
     "decider",
     "research_subagent",
     "reflection",
