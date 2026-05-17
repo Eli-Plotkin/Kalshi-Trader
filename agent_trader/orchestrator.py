@@ -51,22 +51,38 @@ ACTIVE_YAML = PROMPTS_DIR / "active.yaml"
 # Prompt loader
 # ────────────────────────────────────────────────────────────────────────────
 
+# Roles whose system prompts are stable enough to benefit from Anthropic
+# ephemeral prompt caching. We EXCLUDE research_plan + decision_framework
+# because reflection rewrites them — caching a prefix that turns over daily
+# burns the 1.25× write multiplier with no read amortization.
+CACHEABLE_PROMPTS: frozenset[str] = frozenset({
+    "assumptions",
+    "triage",
+    "decider",
+    "research_subagent",
+    "reflection",
+})
+
+
 @dataclass
 class PromptSet:
     pointers: dict[str, str]      # role → filename, e.g. {"triage": "triage_v1.md"}
     bodies: dict[str, str]        # role → file body
+    cacheable: dict[str, bool]    # role → whether to send with cache_control
 
 
 def load_prompts() -> PromptSet:
     pointers = yaml.safe_load(ACTIVE_YAML.read_text())
     bodies: dict[str, str] = {}
+    cacheable: dict[str, bool] = {}
     for role, fname in pointers.items():
         path = PROMPTS_DIR / fname
         if not path.exists():
             log.warning("active prompt %s -> %s missing on disk; skipping body load", role, fname)
             continue
         bodies[role] = path.read_text()
-    return PromptSet(pointers=pointers, bodies=bodies)
+        cacheable[role] = role in CACHEABLE_PROMPTS
+    return PromptSet(pointers=pointers, bodies=bodies, cacheable=cacheable)
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -91,13 +107,17 @@ def _call_and_validate(
     *,
     anthropic_client,
     model: str,
-    system: str,
+    prompts: "PromptSet",
+    role: str,
     user: str,
     budget: runtime.BudgetCounter,
     schema_model,
     killswitch: Optional[runtime.Killswitch] = None,
     max_tokens: int = 2048,
 ):
+    system = runtime.build_system_block(
+        prompts.bodies[role], cacheable=prompts.cacheable.get(role, False)
+    )
     text, usage = runtime.call_llm(
         client=anthropic_client,
         model=model,
@@ -162,7 +182,8 @@ def run_triage(
     out, _ = _call_and_validate(
         anthropic_client=anthropic_client,
         model=MODEL_TRIAGE,
-        system=prompts.bodies["triage"],
+        prompts=prompts,
+        role="triage",
         user=user,
         budget=budget,
         schema_model=TriageOutput,
@@ -282,7 +303,8 @@ def process_market(
         plan, plan_usage = _call_and_validate(
             anthropic_client=anthropic_client,
             model=MODEL_PLAN,
-            system=prompts.bodies["research_plan"],
+            prompts=prompts,
+            role="research_plan",
             user=plan_user,
             budget=market_budget,
             schema_model=ResearchPlan,
@@ -304,7 +326,8 @@ def process_market(
         framework, fw_usage = _call_and_validate(
             anthropic_client=anthropic_client,
             model=MODEL_FRAMEWORK,
-            system=prompts.bodies["decision_framework"],
+            prompts=prompts,
+            role="decision_framework",
             user=framework_user,
             budget=market_budget,
             schema_model=DecisionFramework,
@@ -332,6 +355,7 @@ def process_market(
                 plan=plan,
                 budget=market_budget,
                 killswitch=killswitch,
+                cacheable_system=prompts.cacheable.get("research_subagent", False),
             )
             _sync_cycle_spend()
             runtime.log_step(conn, cycle_id, ticker, "4_findings", {
@@ -358,7 +382,8 @@ def process_market(
         decision, dec_usage = _call_and_validate(
             anthropic_client=anthropic_client,
             model=MODEL_DECIDER,
-            system=prompts.bodies["decider"],
+            prompts=prompts,
+            role="decider",
             user=decider_user,
             budget=market_budget,
             schema_model=Decision,

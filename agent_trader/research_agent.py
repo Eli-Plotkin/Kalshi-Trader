@@ -10,7 +10,9 @@ runs the search loop on its side and returns:
 
 We:
   1. Pre-check the budget.
-  2. Make the call with tool_choice="auto" and `max_uses = plan.tool_call_budget`.
+  2. Make the call with tool_choice="auto" and `max_uses = WEB_SEARCH_MAX_USES`
+     (constant ceiling for cache stability; plan.tool_call_budget is the
+     prompt-level soft cap the subagent sees in its user payload).
   3. Count `server_tool_use` blocks → `tool_calls_used`.
   4. Add token cost + per-search cost (runtime.TOOL_COST_USD_PER_CALL) to BudgetCounter.
   5. Parse + validate the final text against `schemas.Findings`.
@@ -37,6 +39,13 @@ MODEL_RESEARCH = "claude-sonnet-4-6"
 
 WEB_SEARCH_TOOL_TYPE = "web_search_20250305"
 WEB_SEARCH_TOOL_NAME = "web_search"
+
+# Anthropic's prompt cache prefix includes BOTH `system` and `tools[]`. If
+# `max_uses` varies per call (which it would if we keyed it to
+# plan.tool_call_budget), every call would cache-miss. Pinning a constant
+# ceiling keeps the tools block stable so the cached prefix is reusable.
+# The model still self-limits inside this ceiling via tool_choice="auto".
+WEB_SEARCH_MAX_USES = 15
 
 
 def _build_user_message(
@@ -83,6 +92,7 @@ def run_research(
     budget: runtime.BudgetCounter,
     killswitch: Optional[runtime.Killswitch] = None,
     max_tokens: int = 4096,
+    cacheable_system: bool = True,
 ) -> tuple[Findings, dict]:
     over = budget.will_exceed(0.0)
     if over:
@@ -92,7 +102,7 @@ def run_research(
         {
             "type": WEB_SEARCH_TOOL_TYPE,
             "name": WEB_SEARCH_TOOL_NAME,
-            "max_uses": plan.tool_call_budget,
+            "max_uses": WEB_SEARCH_MAX_USES,
         }
     ]
 
@@ -100,17 +110,23 @@ def run_research(
         assumptions=assumptions, market_ctx=market_ctx, plan=plan
     )
 
+    system = runtime.build_system_block(system_prompt, cacheable=cacheable_system)
+
     resp = anthropic_client.messages.create(
         model=MODEL_RESEARCH,
         max_tokens=max_tokens,
-        system=system_prompt,
+        system=system,
         tools=tools,
         messages=[{"role": "user", "content": user}],
     )
 
     in_t = getattr(resp.usage, "input_tokens", 0)
     out_t = getattr(resp.usage, "output_tokens", 0)
-    token_cost = runtime.estimate_cost_usd(MODEL_RESEARCH, in_t, out_t)
+    cache_write = getattr(resp.usage, "cache_creation_input_tokens", 0) or 0
+    cache_read = getattr(resp.usage, "cache_read_input_tokens", 0) or 0
+    token_cost = runtime.estimate_cost_usd(
+        MODEL_RESEARCH, in_t, out_t, cache_write, cache_read
+    )
     tool_calls_used = _count_tool_uses(resp.content)
     search_cost = runtime.estimate_tool_cost_usd(WEB_SEARCH_TOOL_NAME, tool_calls_used)
     total_cost = token_cost + search_cost
@@ -144,6 +160,8 @@ def run_research(
         "model": MODEL_RESEARCH,
         "input_tokens": in_t,
         "output_tokens": out_t,
+        "cache_creation_input_tokens": cache_write,
+        "cache_read_input_tokens": cache_read,
         "token_cost_usd": token_cost,
         "web_search_calls": tool_calls_used,
         "web_search_cost_usd": search_cost,

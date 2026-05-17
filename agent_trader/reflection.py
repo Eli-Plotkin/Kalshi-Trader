@@ -275,7 +275,10 @@ def request_proposals(
     text, usage = runtime.call_llm(
         client=anthropic_client,
         model=MODEL_REFLECTION,
-        system=prompts.bodies["reflection"],
+        system=runtime.build_system_block(
+            prompts.bodies["reflection"],
+            cacheable=prompts.cacheable.get("reflection", False),
+        ),
         user=user,
         budget=budget,
         max_tokens=8192,

@@ -70,7 +70,39 @@ Reviewed 2026-05-14. The 22 items audited individually. Outcomes:
 
 ---
 
-## 5. Wire up Anthropic prompt caching — selectively
+## 5. Wire up Anthropic prompt caching — selectively — DONE (2026-05-12)
+
+Implementation receipts:
+- `runtime.build_system_block(text, cacheable)` returns plain string or the
+  `[{type:"text", text, cache_control:{type:"ephemeral"}}]` block form.
+- `runtime.estimate_cost_usd` now bills `cache_creation_input_tokens` at 1.25×
+  and `cache_read_input_tokens` at 0.10× the model's input rate; constants
+  `CACHE_WRITE_MULTIPLIER` / `CACHE_READ_MULTIPLIER`.
+- `runtime.call_llm` accepts `system: str | list[dict]`, extracts
+  `cache_creation_input_tokens` + `cache_read_input_tokens` from the response,
+  and surfaces both in its usage dict.
+- `orchestrator.CACHEABLE_PROMPTS = {assumptions, triage, decider, research_subagent, reflection}`.
+  `PromptSet.cacheable: dict[str, bool]` populated by `load_prompts`.
+  `_call_and_validate` now takes `prompts` + `role` and builds the system
+  block internally — single source of truth for the cache flag.
+- `research_agent.run_research` wraps its system prompt as cacheable and pins
+  `max_uses` at the constant `WEB_SEARCH_MAX_USES = 15` so the tools[] portion
+  of the cache prefix stops varying per call (was the silent cache-buster).
+  Also bills cache tokens through the cache-aware cost helper.
+- `reflection.request_proposals` passes `build_system_block(reflection_body,
+  cacheable=prompts.cacheable["reflection"])`.
+- `research_plan` + `decision_framework` deliberately left uncached: reflection
+  rewrites them, and caching a body that flips daily costs more than it saves.
+
+**Deferred sub-TODOs:**
+- Move `assumptions_md` from the user JSON into a second cached system block.
+  Currently it lives in every user message, so caching the per-role system
+  block still helps; the assumptions migration would multiply savings but
+  also blast radius — defer until we have live cycles to measure.
+- Reflection-side check: "if cached-prompt cache_read_rate < 50%, propose
+  dropping cadence or warn caching isn't paying off." Needs live data first.
+
+### Original analysis (kept for receipts)
 
 **What:** Mark *stable* system prompts as cacheable on every `messages.create` call so Anthropic charges 0.1× input rate on cache hits and 1.25× on cache writes. **Do NOT blanket-cache every prompt** — this project's whole point is that reflection rewrites prompts over time, and caching a prompt the reflection loop is actively iterating on costs more than it saves.
 

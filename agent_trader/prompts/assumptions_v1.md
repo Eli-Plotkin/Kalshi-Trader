@@ -4,12 +4,13 @@
 > agent MUST NOT propose revisions to this file — it is the human-set anchor that
 > grounds every research plan and decision framework downstream.
 
-## Risk tolerance
+## Risk policy
 
-Scale of 1 (capital preservation, skip almost everything) to 10 (full
-discretion, agent may concentrate the entire bankroll on a single high-edge bet).
-
-- Risk tolerance: 5 / 10
+- Sizing rule: fractional Kelly, f = 0.25 × edge
+- Per-bet cap: 10% of current bankroll
+- Per-cycle cap: 25% of current bankroll across all new positions
+- Max correlated exposure: 30% of bankroll on bets sharing a primary driver
+  (e.g. three NBA games on the same night with overlapping injury news)
 
 ## Bankroll
 
@@ -17,7 +18,7 @@ discretion, agent may concentrate the entire bankroll on a single high-edge bet)
 
 ## Goal
 
-What the agent is optimizing for. Default: maximize profit over the experiment.
+What the agent is optimizing for. 
 
 - Goal: Maximize Profit
 

@@ -279,7 +279,8 @@ MODEL_RATES_PER_MTOK: dict[str, dict[str, float]] = {
     "claude-haiku-4-5-20251001":{"in":  1.00, "out":  5.00},
 }
 
-# Anthropic server-side tool pricing. Charged in addition to token cost.
+# Anthropic server-side tool pricing — billed PER CALL, not per token, so it
+# doesn't fit inside MODEL_RATES_PER_MTOK. Charged in addition to token cost.
 # web_search: $10 per 1,000 searches → $0.010/call.
 #   https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/web-search-tool
 # Rate limits are organization-level and shared with other tools; not codified
@@ -293,6 +294,29 @@ TOOL_COST_USD_PER_CALL: dict[str, float] = {
 def estimate_tool_cost_usd(tool_name: str, call_count: int) -> float:
     rate = TOOL_COST_USD_PER_CALL.get(tool_name, 0.0)
     return rate * call_count
+
+
+# Anthropic prompt-cache multipliers, applied against the model's input rate.
+# Writes (first call seeding the cache) cost 1.25× the base input rate; reads
+# (subsequent hits within the 5-min TTL) cost 0.10×.
+#   https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
+CACHE_WRITE_MULTIPLIER = 1.25
+CACHE_READ_MULTIPLIER = 0.10
+
+
+def build_system_block(text: str, cacheable: bool):
+    """
+    Build the value passed to `messages.create(system=...)`.
+
+    If `cacheable`, returns a list with an ephemeral cache_control marker so
+    Anthropic caches the system prefix. Otherwise returns the plain string.
+
+    Callers must NOT mark a system prompt cacheable if its body varies per call
+    (e.g. reflection rewrite targets) — varying bodies cause cache thrash.
+    """
+    if not cacheable:
+        return text
+    return [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]
 
 
 class BudgetExhausted(RuntimeError):
@@ -323,24 +347,39 @@ class BudgetCounter:
         self.cycle_spent_usd += usd
 
 
-def estimate_cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
+def estimate_cost_usd(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_creation_input_tokens: int = 0,
+    cache_read_input_tokens: int = 0,
+) -> float:
     rates = MODEL_RATES_PER_MTOK.get(model)
     if not rates:
         return 0.0
-    return (input_tokens / 1_000_000.0) * rates["in"] + (output_tokens / 1_000_000.0) * rates["out"]
+    in_rate = rates["in"]
+    return (
+        (input_tokens / 1_000_000.0) * in_rate
+        + (output_tokens / 1_000_000.0) * rates["out"]
+        + (cache_creation_input_tokens / 1_000_000.0) * in_rate * CACHE_WRITE_MULTIPLIER
+        + (cache_read_input_tokens / 1_000_000.0) * in_rate * CACHE_READ_MULTIPLIER
+    )
 
 
 def call_llm(
     *,
     client,
     model: str,
-    system: str,
+    system,
     user: str,
     budget: BudgetCounter,
     max_tokens: int = 2048,
 ) -> tuple[str, dict]:
     """
     Single LLM call with budget enforcement. Returns (text, usage_dict).
+
+    `system` is either a plain string or the list-of-blocks shape produced by
+    `build_system_block(..., cacheable=True)`. Anthropic's API accepts either.
 
     Raises BudgetExhausted before the call if either cap is already crossed.
     """
@@ -356,7 +395,9 @@ def call_llm(
     )
     in_t = getattr(resp.usage, "input_tokens", 0)
     out_t = getattr(resp.usage, "output_tokens", 0)
-    cost = estimate_cost_usd(model, in_t, out_t)
+    cache_write = getattr(resp.usage, "cache_creation_input_tokens", 0) or 0
+    cache_read = getattr(resp.usage, "cache_read_input_tokens", 0) or 0
+    cost = estimate_cost_usd(model, in_t, out_t, cache_write, cache_read)
     budget.add(cost)
 
     # Extract text from the first text block.
@@ -365,7 +406,14 @@ def call_llm(
         if getattr(block, "type", None) == "text":
             text = block.text
             break
-    return text, {"model": model, "input_tokens": in_t, "output_tokens": out_t, "cost_usd": cost}
+    return text, {
+        "model": model,
+        "input_tokens": in_t,
+        "output_tokens": out_t,
+        "cache_creation_input_tokens": cache_write,
+        "cache_read_input_tokens": cache_read,
+        "cost_usd": cost,
+    }
 
 
 def parse_llm_json(text: str):
