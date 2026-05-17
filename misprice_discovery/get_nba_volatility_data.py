@@ -8,7 +8,7 @@ from datetime import datetime
 import pandas as pd
 import requests
 
-from data_retrieval.helpers import parse_event_ticker
+from misprice_discovery.helpers import parse_event_ticker
 
 CSV_FILENAME = "kalshi_nba_volatility_data.csv"
 SERIES_TICKER = "KXNBAGAME"

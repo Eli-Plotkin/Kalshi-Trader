@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 
 import requests
 
-from data_retrieval.helpers import parse_event_ticker
+from misprice_discovery.helpers import parse_event_ticker
 
 # Research dataset configuration.
 SERIES_TICKER = "KXNBAGAME"
