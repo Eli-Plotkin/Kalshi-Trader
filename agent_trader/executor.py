@@ -27,7 +27,7 @@ def _sanity_check(decision: Decision, ticker: str, cash_cents: int) -> Optional[
     """Returns a rejection reason string, or None if the decision passes sanity."""
     if not ticker or not isinstance(ticker, str):
         return "invalid_ticker"
-    if decision.action in ("hold", "skip"):
+    if decision.action in ("hold", "skip", "close_position"):
         return None
     if decision.size_usd <= 0:
         return "non_positive_size"
@@ -93,12 +93,16 @@ def execute_decision(
                 reason="no_position_to_close",
                 raw_order_response={},
             )
-        # Sell whichever side we hold. Position count sign indicates side
-        # (positive = YES, negative = NO); for v1 assume YES positions only.
-        side = "yes"
+        # Sell whichever side we hold. Kalshi reports `position` as a signed
+        # integer (positive = YES contracts held, negative = NO contracts held).
         action = "sell"
-        price = max(1, yes_ask_cents - 1)
         count = abs(current_position_count)
+        if current_position_count > 0:
+            side = "yes"
+            price = max(1, yes_ask_cents - 1)
+        else:
+            side = "no"
+            price = max(1, no_ask_cents - 1)
     elif decision.action == "buy_yes":
         side = "yes"
         action = "buy"
