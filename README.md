@@ -1,5 +1,12 @@
 # Kalshi-Trader
 
+> **`agent_trader/` is paused at `v0-frozen`.** Pipeline runs end-to-end and
+> first real decision rows are verified in `chain_log`. Halted before meaningful
+> forward paper trading concluded. See [Project status](#project-status) for what
+> shipped, what's reusable across other projects, and the two structural reasons
+> it stopped here. The other packages (`kalshi/`, `nba_trading/`, `data_retrieval/`)
+> are unaffected.
+
 Monorepo for [Kalshi](https://kalshi.com) trading experiments. Four
 independent packages on top of one shared HTTP client:
 
@@ -80,6 +87,11 @@ sqlite3 data/agent_log.sqlite \
 ---
 
 ## Going live
+
+> Reference for the historical record. The agent is paused at `v0-frozen` and
+> never went live with real money. The sections below document the intended
+> runbook; see [Project status](#project-status) for why the project stopped
+> before this path was exercised.
 
 Read [agent_trader/prompts/assumptions_v1.md](agent_trader/prompts/assumptions_v1.md)
 first — its bankroll / risk numbers are baked into every prompt.
@@ -214,68 +226,169 @@ python -m agent_trader.reflect --since 7d --budget 3.00
 
 ---
 
-## Repo layout
 
-```
-kalshi/                  # shared signed-request HTTP client
-├── client.py            #   KalshiClient — sign + send REST calls
-└── config.py            #   API_KEY_ID, PRIVATE_KEY_PATH, BASE_URL only
+## What never shipped
 
-agent_trader/            # LLM-driven research-and-trade agent
-├── prompts/             #   versioned prompt bodies + active.yaml pointer
-├── schemas.py           #   pydantic models at every LLM boundary
-├── runtime.py           #   SQLite + killswitch + budget + cost wrapper
-├── market_discovery.py  #   eligibility filter
-├── orchestrator.py      #   per-cycle pipeline
-├── research_agent.py    #   web_search subagent
-├── executor.py          #   order placement + idempotency
-├── reflection.py        #   EOD grader + proposal writer
-├── reflect.py           #   CLI for reflection
-├── dry_run.py           #   one-shot pipeline CLI
-├── scheduler.py         #   APScheduler entry point
-└── smoke.py             #   Kalshi-only smoke test
+The project froze before reaching paper-trading at scale, so several items
+on the original roadmap never landed:
 
-nba_trading/             # price-segment NBA bot (rule-based, not LLM)
-├── config.py            #   SHARES_TO_BUY, FAVORITE_PRICE_MIN/MAX, SCHEDULE_FILE
-├── main.py              #   schedule fetch + per-game bid + auto-cancel-at-tipoff
-├── nba_scheduler.py     #   pulls game schedule + tip-off times
-├── strategy.py          #   should_buy(ask, lo, hi)
-└── portfolio.py         #   simple in-memory position log
+- **Paper-trading simulator (`PaperKalshiClient`).** Wraps the real client
+  for reads, writes synthetic fills locally for orders. Without this the
+  agent only has `dry_run=True` (no orders at all) or `--live` (real money),
+  with no honest forward-evaluation middle ground.
+- **Grading pipeline.** Joining `6_decision` rows to actual market resolution
+  outcomes so reflection has a `Findings` → `Decision` → `Outcome` chain
+  to score against.
+- **Meta-reflection.** LLM proposes structural improvements (new tools, RAG,
+  schema changes) to the developer, not just prompt edits.
+- **Shadow-prompt evaluation.** Run current + proposed prompts on the same
+  forward markets in parallel for paired-difference statistics. Needed
+  before reflection can promote changes autonomously without overfitting.
 
-data_retrieval/          # Kalshi historicals (offline, no trading)
-├── build_research_dataset.py
-├── get_nba_volatility_data.py
-└── helpers.py
-
-data/
-├── agent_log.sqlite     # agent_trader chain log (WAL mode)
-└── proposed_prompts/    # reflection output, awaiting human activation
-```
-
-The shared `.env` file holds credentials read by `kalshi/config.py`
-(`API_KEY_ID`, `PRIVATE_KEY_PATH`) plus per-package settings
-(`ANTHROPIC_API_KEY` for agent_trader; `SHARES_TO_BUY`,
-`FAVORITE_PRICE_MIN`, `FAVORITE_PRICE_MAX`, `SCHEDULE_FILE` for nba_trading).
-See `.env.example` for the agent_trader subset.
-
----
-
-## Pending work
-
-See [TODOS.md](TODOS.md). High-impact items still open:
-
-- Prompt caching (allow-listed; carve out reflection's targets).
-- Meta-reflection: LLM proposes structural improvements (RAG, fine-tuning,
-  new tools) to the developer, not just prompt edits.
-- Token-spend monitoring + automated cost alerts.
+[Project status](#project-status) for why these stopped being priorities.
 
 ---
 
 ## Safety reminders
 
-- This is your real money. The killswitch is conservative on purpose; don't
-  raise its thresholds without reading the trip conditions in
+If this is ever resumed and pointed at real money, the rules below were
+the operating discipline:
+
+- The killswitch is conservative on purpose. Don't raise its thresholds
+  without reading the trip conditions in
   [agent_trader/runtime.py](agent_trader/runtime.py).
 - Always run `dry_run` after editing any prompt, schema, or model assignment.
 - `active.yaml` is the only source of truth for which prompt version is live.
   Don't edit prompt files in-place — bump the version.
+
+---
+
+## Project status
+
+`agent_trader/` is paused at `v0-frozen`. The pipeline runs end-to-end —
+discovery → coarse filter → triage → per-market plan/framework/research/decider —
+with parallel execution, shared prompt caching, and full chain_log auditing.
+The first real `6_decision` rows are verified: the decider correctly identified
+directional edge on an NBA market and refused to size because the framework's
+data-completeness criteria weren't met. The infrastructure works.
+
+It's paused because the trading thesis hits two structural problems that
+can't be engineered around at the sample sizes that were practical to gather.
+Both are documented below so future-me — or anyone reading this — doesn't
+re-derive them the hard way.
+
+### Why it was paused
+
+**1. Self-improvement overfits to variance.** The reflection loop reads
+recent decisions, identifies failure patterns, and proposes prompt edits.
+The trap is sample size: at 20-50 graded paper trades, the win-rate signal
+is dominated by variance. A prompt change that lifts win rate from 45% to
+55% over 30 trades has a confidence interval that comfortably includes "no
+real change." Reflection will "learn" patterns from noise and write prompt
+edits that fit historical luck.
+
+The honest workaround is statistical — hold out recent cycles, require
+Wilson confidence intervals to exclude zero, constrain diffs to one role
+at a time, optimize on calibration (Brier score) as a leading indicator
+that converges faster than win rate. All doable, none cheap in sample
+size: hundreds of graded cycles before the signal stabilizes.
+
+**2. The backtest problem is structural.** Replaying past decisions
+through a new prompt to measure improvement looks like the natural
+evaluation path. It doesn't work for LLM+web_search agents because the
+historical truth needed to grade a replay is the same information that
+the replay would need to *retrieve* — and that information has changed
+between then and now. Specifically:
+
+- **Training data leaks outcomes.** Opus 4.7 knows who won every NBA
+  game through January 2026. Ask it to "predict" a 2025 game and it
+  appears to crush the market because it's recalling, not predicting.
+- **`web_search` returns current results.** Articles written after the
+  event get retrieved when replaying a decision from before the event.
+  Indexed content, rankings, and link availability all reflect today.
+- **Time-restricted prompting doesn't help** — the model already knows
+  the answer from training.
+
+The only stage that *can* be replayed cleanly is the decider, against
+already-logged findings. That evaluates decider-prompt changes
+deterministically. It can't evaluate any change upstream of stored
+findings — because evaluating those requires re-running research, which
+puts you back in the leakage trap.
+
+So forward paper trading is the only honest validation path, and it
+needs 100+ cycles to produce stable signal. At ~$1-3/cycle in LLM cost
+that's $100-300 to know whether the thesis has legs — cheap experiment,
+weeks of wall-clock, and the most likely answer is "no edge in liquid
+markets without information advantage, maybe edge in narrow niches we haven't explored." Decided the
+engineering value was already extracted and that further investment
+didn't pencil out.
+
+### Engineering patterns worth reusing
+
+Domain-independent, useful in any future LLM-agent project:
+
+- **Shared cached prefix across stages.** Assumptions live in the system
+  block, marked cacheable, reused across every role (coarse_filter,
+  triage, plan, framework, research, decider). One cached prefix
+  amortizes across all stages within the 5-minute TTL.
+  See [agent_trader/runtime.py](agent_trader/runtime.py) `build_system_block`.
+
+- **Three-layer discovery funnel.** Code filter → LLM coarse filter
+  (parallel, per-market, fail-open) → LLM batch ranking. The middle
+  layer scales from ~10k open markets to a tractable ranking input
+  without losing semantic filtering.
+  [agent_trader/coarse_filter.py](agent_trader/coarse_filter.py).
+
+- **Replay-invariant chain_log.** Every stage writes inputs, outputs,
+  prompt version pointers, model parameters, and token usage to SQLite
+  as one row per `(cycle_id, ticker, step)`. Designed so the seven items
+  needed to replay any decision are reconstructable from the log alone,
+  without re-running any LLM call.
+  [agent_trader/runtime.py](agent_trader/runtime.py) `log_step`.
+
+- **Per-market parallelism with soft cycle budget.** `ThreadPoolExecutor`
+  with `DEFAULT_MAX_CONCURRENT_MARKETS = 3` (under Anthropic's burst
+  ceiling). Each worker holds a private SQLite connection and a budget
+  counter seeded from the cycle-spend snapshot at parallel-block entry;
+  spend aggregates back after all workers finish.
+  [agent_trader/orchestrator.py](agent_trader/orchestrator.py) `run_cycle`.
+
+- **Tolerant JSON parser for tool-use outputs.** Tool-use models narrate
+  before answering and resist instructions to stop. `runtime.parse_llm_json`
+  tries pure JSON, wrapping fence, embedded fence, and balanced-brace
+  extraction in that order. Cheaper than fighting model habits via prompt.
+
+- **Schema gates between every LLM stage.** Pydantic models in
+  [agent_trader/schemas.py](agent_trader/schemas.py) define the contract
+  for every transition. Malformed responses raise `MalformedLLMResponse`,
+  feed the killswitch, and surface before they propagate.
+
+### What restart would require
+
+Not a checklist. A precondition list — without these, restarting just
+re-runs the same questions:
+
+- **A specific edge thesis tied to a narrow niche.** Not "all of Kalshi."
+  Long-tail markets with low liquidity, markets requiring multi-source
+  synthesis humans haven't done, scheduled-event reactions where LLM
+  synthesis competes with other slow analysis.
+- **A live baseline during paper trading.** For sports, Vegas implied
+  odds captured at decision time. Without a baseline you can't tell
+  "agent has edge" from "agent reproduces consensus at $0.50/market."
+- **Shadow-prompt evaluation** before reflection runs autonomously.
+  Roughly 5× the statistical power of sequential single-arm comparisons
+  at the same wall-clock and ~1.05× the cost.
+- **Patience for 100+ graded paper cycles** before drawing any conclusion.
+
+### What carries forward
+
+- The `chain_log` pattern with the seven-item replay invariant. Any LLM
+  agent that needs to be debugged, audited, or evolved benefits from
+  this much state being durable.
+- Cascaded model assignment with shared cached prefix. Right shape for
+  any multi-stage agent pipeline.
+- Cost-vs-edge × size as an architecture-level constraint, not a detail
+  to handle later.
+- Forward-measurement-only discipline when training-data leakage makes
+  backtesting structurally invalid. Most LLM-agent projects have this
+  problem and don't acknowledge it.
