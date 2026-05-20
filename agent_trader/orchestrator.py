@@ -28,7 +28,7 @@ from typing import Optional
 import yaml
 from pydantic import ValidationError
 
-from . import research_agent, runtime
+from . import coarse_filter, research_agent, runtime
 from .executor import ExecutionResult, execute_decision
 from .market_discovery import EligibleMarket, discover_eligible_markets
 from .schemas import (
@@ -59,6 +59,7 @@ ACTIVE_YAML = PROMPTS_DIR / "active.yaml"
 # in a cycle amortize the 1.25× write across 4 reads at 0.10×.
 CACHEABLE_PROMPTS: frozenset[str] = frozenset({
     "assumptions",
+    "coarse_filter",
     "triage",
     "research_plan",
     "decision_framework",
@@ -99,8 +100,14 @@ MODEL_FRAMEWORK = "claude-sonnet-4-6"
 MODEL_DECIDER = "claude-opus-4-7"
 
 DEFAULT_TOP_N = 5
-DEFAULT_MARKET_BUDGET_USD = 0.50
+DEFAULT_MARKET_BUDGET_USD = 1.00
 DEFAULT_CYCLE_BUDGET_USD = 3.00
+
+# Per-market workers run in parallel. Each runs a Sonnet plan, framework, and
+# research subagent (8-15 web_search calls) plus an Opus decider. With N
+# concurrent markets we burst N × ~10 Anthropic calls in flight — keep N small
+# to stay under burst RPM limits. Increase only after measuring 429 frequency.
+DEFAULT_MAX_CONCURRENT_MARKETS = 3
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -118,9 +125,12 @@ def _call_and_validate(
     schema_model,
     killswitch: Optional[runtime.Killswitch] = None,
     max_tokens: int = 2048,
+    assumptions: Optional[str] = None,
 ):
     system = runtime.build_system_block(
-        prompts.bodies[role], cacheable=prompts.cacheable.get(role, False)
+        prompts.bodies[role],
+        cacheable=prompts.cacheable.get(role, False),
+        prefix=assumptions,
     )
     text, usage = runtime.call_llm(
         client=anthropic_client,
@@ -174,7 +184,6 @@ def run_triage(
     import json
     now = datetime.now(timezone.utc)
     payload = {
-        "assumptions_md": assumptions,
         "portfolio": {
             "cash_cents": portfolio.cash_cents,
             "positions": portfolio.positions,
@@ -193,6 +202,7 @@ def run_triage(
         schema_model=TriageOutput,
         killswitch=killswitch,
         max_tokens=1024,
+        assumptions=assumptions,
     )
     return out
 
@@ -272,8 +282,9 @@ def process_market(
     dry_run: bool = True,
     skip_research: bool = False,
     seq: int = 1,
-) -> MarketOutcome:
-    """Run the full per-market pipeline. All steps written to chain_log."""
+) -> tuple[MarketOutcome, float]:
+    """Run the full per-market pipeline. All steps written to chain_log.
+    Returns (outcome, market_spent_usd)."""
     import json
 
     ticker = market.ticker
@@ -299,7 +310,6 @@ def process_market(
     try:
         # Step a: ResearchPlan
         plan_user = "INPUT:\n" + json.dumps({
-            "assumptions_md": assumptions,
             "portfolio": {"cash_cents": portfolio.cash_cents, "positions": portfolio.positions},
             "market": market_ctx,
             "triage_rationale": triage_rationale,
@@ -313,6 +323,7 @@ def process_market(
             budget=market_budget,
             schema_model=ResearchPlan,
             killswitch=killswitch,
+            assumptions=assumptions,
         )
         _sync_cycle_spend()
         runtime.log_step(conn, cycle_id, ticker, "2_research_plan", {
@@ -322,7 +333,6 @@ def process_market(
 
         # Step b: DecisionFramework
         framework_user = "INPUT:\n" + json.dumps({
-            "assumptions_md": assumptions,
             "portfolio": {"cash_cents": portfolio.cash_cents, "positions": portfolio.positions},
             "market": market_ctx,
             "research_plan": plan.model_dump(),
@@ -336,6 +346,7 @@ def process_market(
             budget=market_budget,
             schema_model=DecisionFramework,
             killswitch=killswitch,
+            assumptions=assumptions,
         )
         _sync_cycle_spend()
         runtime.log_step(conn, cycle_id, ticker, "3_decision_framework", {
@@ -372,12 +383,12 @@ def process_market(
         ok, bench_reason = _benchmark(plan, findings)
         runtime.log_step(conn, cycle_id, ticker, "5_benchmark", {"ok": ok, "reason": bench_reason})
         if not ok:
-            return MarketOutcome(ticker, completed=True, skip_reason=f"benchmark:{bench_reason}",
-                                 decision=None, execution=None)
+            return (MarketOutcome(ticker, completed=True, skip_reason=f"benchmark:{bench_reason}",
+                                  decision=None, execution=None),
+                    market_budget.market_spent_usd)
 
         # Step e: Decision
         decider_user = "INPUT:\n" + json.dumps({
-            "assumptions_md": assumptions,
             "market": market_ctx,
             "research_plan": plan.model_dump(),
             "decision_framework": framework.model_dump(),
@@ -392,6 +403,7 @@ def process_market(
             budget=market_budget,
             schema_model=Decision,
             killswitch=killswitch,
+            assumptions=assumptions,
         )
         _sync_cycle_spend()
         runtime.log_step(conn, cycle_id, ticker, "6_decision", {
@@ -402,8 +414,9 @@ def process_market(
         # Step f: Execute
         if dry_run:
             runtime.log_step(conn, cycle_id, ticker, "7_execute", {"dry_run": True, "skipped": True})
-            return MarketOutcome(ticker, completed=True, skip_reason=None,
-                                 decision=decision, execution=None)
+            return (MarketOutcome(ticker, completed=True, skip_reason=None,
+                                  decision=decision, execution=None),
+                    market_budget.market_spent_usd)
 
         result = execute_decision(
             client=kalshi_client,
@@ -424,17 +437,20 @@ def process_market(
             "filled_count": result.filled_count,
         })
         runtime.log_order(conn, cycle_id, ticker, result)
-        return MarketOutcome(ticker, completed=True, skip_reason=None,
-                             decision=decision, execution=result)
+        return (MarketOutcome(ticker, completed=True, skip_reason=None,
+                              decision=decision, execution=result),
+                market_budget.market_spent_usd)
 
     except runtime.BudgetExhausted as e:
         runtime.log_step(conn, cycle_id, ticker, "abort_budget", {"reason": str(e)})
-        return MarketOutcome(ticker, completed=False, skip_reason=f"budget:{e}",
-                             decision=None, execution=None)
+        return (MarketOutcome(ticker, completed=False, skip_reason=f"budget:{e}",
+                              decision=None, execution=None),
+                market_budget.market_spent_usd)
     except runtime.MalformedLLMResponse as e:
         runtime.log_step(conn, cycle_id, ticker, "abort_malformed", {"reason": str(e)})
-        return MarketOutcome(ticker, completed=False, skip_reason=f"malformed:{e}",
-                             decision=None, execution=None)
+        return (MarketOutcome(ticker, completed=False, skip_reason=f"malformed:{e}",
+                              decision=None, execution=None),
+                market_budget.market_spent_usd)
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -453,6 +469,9 @@ def run_cycle(
     dry_run: bool = True,
     skip_research: bool = False,
     killswitch: Optional[runtime.Killswitch] = None,
+    series_ticker: Optional[str] = None,
+    skip_coarse_filter: bool = False,
+    coarse_filter_parallelism: int = coarse_filter.DEFAULT_PARALLELISM,
 ) -> dict:
     conn = runtime.init_db()
     prompts = load_prompts()
@@ -495,6 +514,7 @@ def run_cycle(
             kalshi_client,
             min_daily_volume=min_daily_volume,
             min_hours_to_close=min_hours_to_close,
+            series_ticker=series_ticker,
         )
     except Exception as e:
         log.exception("discover_eligible_markets failed")
@@ -518,6 +538,46 @@ def run_cycle(
         market_cap_usd=market_budget_usd,
         cycle_cap_usd=cycle_budget_usd,
     )
+
+    # Coarse filter (layer 2): parallel per-market haiku yes/no.
+    # Skipped when caller passes skip_coarse_filter=True (small universes or
+    # when debugging triage in isolation).
+    if skip_coarse_filter or "coarse_filter" not in prompts.bodies:
+        runtime.log_step(conn, cycle_id, "_universe", "coarse_filter_skipped",
+                         {"reason": "flag" if skip_coarse_filter else "no_prompt"})
+        filtered = eligible
+    else:
+        try:
+            filtered, all_cf_results = coarse_filter.run_coarse_filter(
+                anthropic_client=anthropic_client,
+                system_prompt=prompts.bodies["coarse_filter"],
+                cacheable=prompts.cacheable.get("coarse_filter", False),
+                assumptions=assumptions,
+                eligible=eligible,
+                cycle_budget=cycle_budget,
+                parallelism=coarse_filter_parallelism,
+            )
+        except Exception as e:
+            log.exception("coarse_filter raised")
+            runtime.log_step(conn, cycle_id, "_universe", "coarse_filter_error", {"error": str(e)})
+            filtered = eligible  # fail-open
+            all_cf_results = []
+        runtime.log_step(conn, cycle_id, "_universe", "coarse_filter", {
+            "input_count": len(eligible),
+            "kept_count": len(filtered),
+            "decisions": [
+                {"ticker": r.ticker, "keep": r.keep, "reason": r.reason,
+                 "error": r.error, "usage": r.usage}
+                for r in all_cf_results
+            ],
+        })
+        if not filtered:
+            if killswitch:
+                killswitch.note_cycle_api_status(had_errors=had_api_errors)
+            runtime.close_cycle(conn, cycle_id, "ok", "coarse_filter_kept_none")
+            return {"cycle_id": cycle_id, "status": "ok", "outcomes": []}
+
+    eligible = filtered
 
     # Triage
     try:
@@ -543,18 +603,32 @@ def run_cycle(
     # Index eligible by ticker for lookup
     by_ticker = {m.ticker: m for m in eligible}
 
-    outcomes: list[MarketOutcome] = []
+    # Build the work list (filtering hallucinated tickers before submitting to
+    # the pool so we don't spawn workers for non-existent markets).
+    work: list[tuple[int, str, EligibleMarket]] = []
     for seq, scored in enumerate(triage.top_tickers, start=1):
-        if runtime.shutdown_requested():
-            log.warning("shutdown requested mid-cycle; stopping further markets")
-            break
         market = by_ticker.get(scored.ticker)
         if not market:
             log.warning("triage surfaced unknown ticker %s", scored.ticker)
             continue
+        work.append((seq, scored.rationale, market))
+
+    # Snapshot cycle spend at entry. Each worker runs against a private
+    # BudgetCounter seeded with this snapshot — they can't see each other's
+    # in-flight spend, so the cycle cap becomes a soft ceiling. Acceptable for
+    # paper trading; revisit if we ever route live orders through this path.
+    cycle_spent_at_start = cycle_budget.cycle_spent_usd
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import sqlite3 as _sqlite3
+
+    def _run_one(seq: int, rationale: str, market: EligibleMarket):
+        # Each worker thread needs its own sqlite connection (the default
+        # sqlite3 module raises if a connection is used from multiple threads).
+        worker_conn = runtime.init_db()
         try:
-            outcome = process_market(
-                conn=conn,
+            return process_market(
+                conn=worker_conn,
                 cycle_id=cycle_id,
                 anthropic_client=anthropic_client,
                 kalshi_client=kalshi_client,
@@ -562,28 +636,47 @@ def run_cycle(
                 assumptions=assumptions,
                 market=market,
                 portfolio=portfolio,
-                triage_rationale=scored.rationale,
+                triage_rationale=rationale,
                 market_budget_usd=market_budget_usd,
-                cycle_budget=cycle_budget,
+                cycle_budget=runtime.BudgetCounter(
+                    market_cap_usd=market_budget_usd,
+                    cycle_cap_usd=cycle_budget_usd,
+                    cycle_spent_usd=cycle_spent_at_start,
+                ),
                 killswitch=killswitch,
                 dry_run=dry_run,
                 skip_research=skip_research,
                 seq=seq,
             )
-        except Exception as e:
-            log.exception("process_market(%s) raised", scored.ticker)
-            had_api_errors = True
-            if killswitch:
-                killswitch.note_api_error()
-            runtime.log_step(conn, cycle_id, scored.ticker, "abort_exception", {"error": str(e)})
-            outcomes.append(MarketOutcome(scored.ticker, completed=False,
-                                          skip_reason=f"exception:{e}",
-                                          decision=None, execution=None))
-            continue
-        outcomes.append(outcome)
-        if killswitch and killswitch.check(portfolio.cash_cents):
-            log.warning("killswitch tripped mid-cycle; stopping further markets")
-            break
+        finally:
+            worker_conn.close()
+
+    outcomes: list[MarketOutcome] = []
+    total_market_spend = 0.0
+    with ThreadPoolExecutor(max_workers=DEFAULT_MAX_CONCURRENT_MARKETS) as pool:
+        futures = {pool.submit(_run_one, seq, rat, mkt): (seq, mkt.ticker)
+                   for seq, rat, mkt in work}
+        for future in as_completed(futures):
+            seq, ticker = futures[future]
+            try:
+                outcome, market_spent = future.result()
+                outcomes.append(outcome)
+                total_market_spend += market_spent
+            except Exception as e:
+                log.exception("process_market(%s) raised", ticker)
+                had_api_errors = True
+                if killswitch:
+                    killswitch.note_api_error()
+                runtime.log_step(conn, cycle_id, ticker, "abort_exception", {"error": str(e)})
+                outcomes.append(MarketOutcome(ticker, completed=False,
+                                              skip_reason=f"exception:{e}",
+                                              decision=None, execution=None))
+
+    # Fold each market's spend into the shared cycle_budget. Workers ran
+    # against private copies seeded with the start-of-parallel snapshot, so
+    # cycle_budget hasn't seen their increments yet.
+    cycle_budget.cycle_spent_usd = cycle_spent_at_start + total_market_spend
+    _ = _sqlite3  # imported above for future per-worker cleanup hooks
 
     if killswitch:
         killswitch.note_cycle_api_status(had_errors=had_api_errors)

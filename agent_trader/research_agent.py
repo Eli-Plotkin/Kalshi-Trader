@@ -50,13 +50,11 @@ WEB_SEARCH_MAX_USES = 15
 
 def _build_user_message(
     *,
-    assumptions: str,
     market_ctx: dict,
     plan: ResearchPlan,
 ) -> str:
     return "INPUT:\n" + json.dumps(
         {
-            "assumptions_md": assumptions,
             "market": market_ctx,
             "research_plan": plan.model_dump(),
         },
@@ -91,7 +89,7 @@ def run_research(
     plan: ResearchPlan,
     budget: runtime.BudgetCounter,
     killswitch: Optional[runtime.Killswitch] = None,
-    max_tokens: int = 4096,
+    max_tokens: int = 16384,
     cacheable_system: bool = True,
 ) -> tuple[Findings, dict]:
     over = budget.will_exceed(0.0)
@@ -106,11 +104,11 @@ def run_research(
         }
     ]
 
-    user = _build_user_message(
-        assumptions=assumptions, market_ctx=market_ctx, plan=plan
-    )
+    user = _build_user_message(market_ctx=market_ctx, plan=plan)
 
-    system = runtime.build_system_block(system_prompt, cacheable=cacheable_system)
+    system = runtime.build_system_block(
+        system_prompt, cacheable=cacheable_system, prefix=assumptions
+    )
 
     resp = anthropic_client.messages.create(
         model=MODEL_RESEARCH,

@@ -304,19 +304,31 @@ CACHE_WRITE_MULTIPLIER = 1.25
 CACHE_READ_MULTIPLIER = 0.10
 
 
-def build_system_block(text: str, cacheable: bool):
+def build_system_block(text: str, cacheable: bool, prefix: Optional[str] = None):
     """
     Build the value passed to `messages.create(system=...)`.
 
-    If `cacheable`, returns a list with an ephemeral cache_control marker so
-    Anthropic caches the system prefix. Otherwise returns the plain string.
+    If `cacheable`, returns a list of text blocks with ephemeral cache_control
+    markers so Anthropic caches the system prefix.
+
+    When `prefix` is provided, it becomes its own cached block placed BEFORE
+    the role-specific body. This is how we share a single cached assumptions
+    block across every role (decider, plan, framework, …) within a cycle —
+    each role's combined cache key is (prefix, body), but the prefix's
+    underlying tokens are reused.
 
     Callers must NOT mark a system prompt cacheable if its body varies per call
     (e.g. reflection rewrite targets) — varying bodies cause cache thrash.
     """
     if not cacheable:
-        return text
-    return [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]
+        return f"{prefix}\n\n{text}" if prefix else text
+    blocks = []
+    if prefix:
+        blocks.append({"type": "text", "text": prefix,
+                       "cache_control": {"type": "ephemeral"}})
+    blocks.append({"type": "text", "text": text,
+                   "cache_control": {"type": "ephemeral"}})
+    return blocks
 
 
 class BudgetExhausted(RuntimeError):
@@ -417,13 +429,70 @@ def call_llm(
 
 
 def parse_llm_json(text: str):
-    """Strip optional code fences and parse JSON. Raises MalformedLLMResponse on failure."""
+    """
+    Parse JSON from an LLM response. Tolerates several common output shapes:
+
+      1. Pure JSON.
+      2. JSON wrapped in a fenced code block as the entire response.
+      3. Prose preamble followed by a ```json ... ``` block (typical for
+         tool-use models that narrate before answering).
+      4. Prose preamble followed by a bare JSON object (no fence) — found by
+         locating the first '{' and parsing balanced braces.
+
+    Raises MalformedLLMResponse on failure.
+    """
     import re
     cleaned = text.strip()
-    fence = re.match(r"^```(?:json)?\s*\n?(.*?)\n?```$", cleaned, re.DOTALL)
-    if fence:
-        cleaned = fence.group(1).strip()
+
+    # (1)/(2): try strict parse first, then strip a wrapping fence.
     try:
         return json.loads(cleaned)
-    except json.JSONDecodeError as e:
-        raise MalformedLLMResponse(f"json_decode_error: {e}; head={cleaned[:200]!r}")
+    except json.JSONDecodeError:
+        pass
+    fence_full = re.match(r"^```(?:json)?\s*\n?(.*?)\n?```$", cleaned, re.DOTALL)
+    if fence_full:
+        try:
+            return json.loads(fence_full.group(1).strip())
+        except json.JSONDecodeError:
+            pass
+
+    # (3): find an embedded ```json ... ``` block anywhere in the text.
+    fence_embedded = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", cleaned, re.DOTALL)
+    if fence_embedded:
+        try:
+            return json.loads(fence_embedded.group(1).strip())
+        except json.JSONDecodeError:
+            pass
+
+    # (4): scan for the first balanced JSON object. Walks the string tracking
+    # brace depth and string-literal state so braces inside string values
+    # don't confuse the matcher.
+    start = cleaned.find("{")
+    if start != -1:
+        depth = 0
+        in_str = False
+        escape = False
+        for i in range(start, len(cleaned)):
+            ch = cleaned[i]
+            if in_str:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = cleaned[start:i + 1]
+                    try:
+                        return json.loads(candidate)
+                    except json.JSONDecodeError:
+                        break
+
+    raise MalformedLLMResponse(f"json_decode_error: no parsable JSON object; head={cleaned[:200]!r}")

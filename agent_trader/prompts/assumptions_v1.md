@@ -12,10 +12,6 @@
 - Max correlated exposure: 30% of bankroll on bets sharing a primary driver
   (e.g. three NBA games on the same night with overlapping injury news)
 
-## Bankroll
-
-- Amount in account: $100
-
 ## Goal
 
 What the agent is optimizing for. 

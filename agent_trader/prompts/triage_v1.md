@@ -33,6 +33,16 @@ heuristics:
 Bad triage signals: novelty / vibes markets with no public information
 asymmetry; markets you have no idea how to research.
 
+
+## Hard constraint: tickers MUST come from input
+
+Every `ticker` string you return MUST be copied verbatim from the `markets`
+array in the INPUT. Do not invent, modify, complete, or pattern-match ticker
+strings. If a market looks interesting but you cannot find its exact ticker in
+the input, omit it. Hallucinated tickers are a critical failure mode — when in
+doubt, return fewer entries rather than guessing.
+
+
 ## Return format
 
 Return ONLY valid JSON matching this schema (no prose, no markdown fences):

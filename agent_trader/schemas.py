@@ -8,6 +8,13 @@ from pydantic import BaseModel, Field
 Action = Literal["buy_yes", "buy_no", "close_position", "hold", "skip"]
 
 
+class CoarseFilterDecision(BaseModel):
+    """Layer 2 per-market yes/no gate. Decides whether a market is worth the
+    Sonnet/Opus pipeline. Runs in parallel across hundreds of markets."""
+    keep: bool
+    reason: str
+
+
 class TriageScore(BaseModel):
     ticker: str
     mispriced_score: float = Field(ge=0.0, le=1.0)

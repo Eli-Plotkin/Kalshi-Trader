@@ -26,6 +26,7 @@ from typing import Optional
 from pydantic import TypeAdapter, ValidationError
 
 from . import orchestrator, runtime
+from .market_discovery import dollars_str_to_cents
 from .schemas import (
     Decision,
     DecisionFramework,
@@ -97,12 +98,63 @@ def _market_tickers_in_cycle(conn: sqlite3.Connection, cycle_id: int) -> list[st
 # Grading
 # ────────────────────────────────────────────────────────────────────────────
 
+def _virtual_pnl_usd(decision: Decision, observed: dict) -> Optional[float]:
+    """
+    Hypothetical (dry-run) or unrealized (live) $ P&L for the position this
+    decision would have opened. Contract count mirrors `executor.execute_decision`
+    so the grade reflects what would actually have filled. Returns None when
+    not applicable (skip/hold/close_position) or when price data is missing.
+
+    Mark-to-market:
+      - settled markets → 100¢ on the winning side, 0¢ on the losing side
+      - open markets    → current YES mid (for buy_yes) or 100 - YES mid (for buy_no)
+    """
+    if decision.action not in ("buy_yes", "buy_no"):
+        return None
+    if decision.size_usd <= 0:
+        return None
+
+    status = observed.get("status")
+    result = observed.get("result")
+    nyb = observed.get("now_yes_bid_cents")
+    nya = observed.get("now_yes_ask_cents")
+    now_yes_mid = (nyb + nya) / 2.0 if (nyb is not None and nya is not None) else None
+
+    if decision.action == "buy_yes":
+        entry = observed.get("decision_yes_ask_cents")
+        if not entry or entry <= 0:
+            return None
+        if status == "settled" and result in ("yes", "no"):
+            exit_cents: float = 100.0 if result == "yes" else 0.0
+        elif now_yes_mid is not None:
+            exit_cents = now_yes_mid
+        else:
+            return None
+    else:  # buy_no — entry mirrors executor's synthetic no_ask = 100 - yes_bid
+        dyb = observed.get("decision_yes_bid_cents")
+        if dyb is None:
+            return None
+        entry = 100 - dyb
+        if entry <= 0:
+            return None
+        if status == "settled" and result in ("yes", "no"):
+            exit_cents = 100.0 if result == "no" else 0.0
+        elif now_yes_mid is not None:
+            exit_cents = 100.0 - now_yes_mid
+        else:
+            return None
+
+    count = max(1, int((decision.size_usd * 100) // entry))
+    pnl_cents = count * (exit_cents - entry)
+    return round(pnl_cents / 100.0, 4)
+
+
 def _grade_decision(decision: Decision, observed: dict) -> dict:
     """
     Compare expected_outcome against observed market state.
 
     `observed` carries:
-      - decision_yes_ask_cents — yes_ask at decision time
+      - decision_yes_bid_cents / decision_yes_ask_cents — quotes at decision time
       - now_yes_bid_cents / now_yes_ask_cents — current market
       - status                — open / closed / settled
       - result                — yes / no / null
@@ -139,6 +191,8 @@ def _grade_decision(decision: Decision, observed: dict) -> dict:
     if resolved and eo.predicted_resolution in ("yes", "no"):
         resolution_match = observed.get("result") == eo.predicted_resolution
 
+    pnl_usd = _virtual_pnl_usd(decision, observed)
+
     return {
         "decision_yes_ask_cents": decision_price,
         "now_mid_cents": now_mid,
@@ -146,6 +200,7 @@ def _grade_decision(decision: Decision, observed: dict) -> dict:
         "eod_target_hit": eod_hit,
         "resolved": resolved,
         "resolution_match": resolution_match,
+        "pnl_usd": pnl_usd,
     }
 
 
@@ -200,10 +255,11 @@ def collect_graded_decisions(
             current = kalshi_client.get_market(ticker) or {}
 
             observed = {
+                "decision_yes_bid_cents": decision_market.get("yes_bid_cents"),
                 "decision_yes_ask_cents": decision_market.get("yes_ask_cents"),
-                "now_yes_bid_cents": current.get("yes_bid"),
-                "now_yes_ask_cents": current.get("yes_ask"),
-                "now_last_price_cents": current.get("last_price"),
+                "now_yes_bid_cents": dollars_str_to_cents(current.get("yes_bid_dollars")),
+                "now_yes_ask_cents": dollars_str_to_cents(current.get("yes_ask_dollars")),
+                "now_last_price_cents": dollars_str_to_cents(current.get("last_price_dollars")),
                 "status": current.get("status"),
                 "result": current.get("result"),
             }

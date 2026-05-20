@@ -211,6 +211,9 @@ __marimo__/
 *.json
 *.key
 
+# Generated local scanner state
+data/sportsbook_sourced.sqlite*
+
 # Hide nested secrets
 **/*.env
 **/*.key

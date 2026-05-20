@@ -13,8 +13,8 @@ class EligibleMarket:
     yes_bid_cents: int
     yes_ask_cents: int
     last_price_cents: int
-    volume_24h: int
-    open_interest: int
+    volume_24h: float
+    open_interest: float
     close_time: Optional[datetime]
     raw_market_response: dict
 
@@ -29,11 +29,24 @@ def _parse_close_time(value: Optional[str]) -> Optional[datetime]:
         return None
 
 
+def dollars_str_to_cents(value) -> int:
+    """Kalshi price fields (yes_bid_dollars, yes_ask_dollars, last_price_dollars)
+    are dollar-denominated decimal strings like "0.4200". Downstream code (LLM
+    prompts, executor, grading) expects integer cents."""
+    if value is None or value == "":
+        return 0
+    try:
+        return int(round(float(value) * 100))
+    except (TypeError, ValueError):
+        return 0
+
+
 def discover_eligible_markets(
     client,
     min_daily_volume: int = 100,
     min_hours_to_close: int = 8,
     max_pages: int = 50,
+    series_ticker: Optional[str] = None,
 ) -> list[EligibleMarket]:
     """
     Paginate Kalshi /markets?status=open and return markets that meet the
@@ -50,12 +63,19 @@ def discover_eligible_markets(
     cursor = None
     pages = 0
 
+    extra = {"series_ticker": series_ticker} if series_ticker else {}
     while pages < max_pages:
-        markets, cursor = client.list_markets(status="open", limit=200, cursor=cursor)
+        markets, cursor = client.list_markets(status="open", limit=200, cursor=cursor, **extra)
         pages += 1
         for m in markets:
-            volume = int(m.get("volume_24h") or m.get("volume") or 0)
-            open_interest = int(m.get("open_interest") or 0)
+            volume = float(m.get("volume_24h_fp") or m.get("volume_fp") or 0)
+            open_interest = float(m.get("open_interest_fp") or 0)
+            # NOTE: do not filter on `is_provisional`. Per Kalshi: "If true, the
+            # market may be removed after determination if there is no activity
+            # on it." It's a lifecycle/garbage-collection flag, not a
+            # tradeability signal — real liquid markets (e.g. NBA games with
+            # $1M+ volume) carry is_provisional=true. The volume + OI floor
+            # below is what actually rejects placeholder parlays.
             if volume < min_daily_volume or open_interest <= 0:
                 continue
             close_time = _parse_close_time(m.get("close_time"))
@@ -68,9 +88,9 @@ def discover_eligible_markets(
                 EligibleMarket(
                     ticker=m["ticker"],
                     title=m.get("title", ""),
-                    yes_bid_cents=int(m.get("yes_bid") or 0),
-                    yes_ask_cents=int(m.get("yes_ask") or 0),
-                    last_price_cents=int(m.get("last_price") or 0),
+                    yes_bid_cents=dollars_str_to_cents(m.get("yes_bid_dollars")),
+                    yes_ask_cents=dollars_str_to_cents(m.get("yes_ask_dollars")),
+                    last_price_cents=dollars_str_to_cents(m.get("last_price_dollars")),
                     volume_24h=volume,
                     open_interest=open_interest,
                     close_time=close_time,

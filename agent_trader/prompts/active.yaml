@@ -4,6 +4,7 @@
 # Every cycle snapshots this file into the chain_log so logs are reproducible.
 
 assumptions: assumptions_v1.md
+coarse_filter: coarse_filter_v1.md
 triage: triage_v1.md
 research_plan: research_plan_v1.md
 decision_framework: decision_framework_v1.md

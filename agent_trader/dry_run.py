@@ -42,6 +42,13 @@ def main() -> int:
     parser.add_argument("--no-research", action="store_true",
                         help="Skip the web-search research stage; stub findings instead. "
                              "Useful for shaking out prompt shape cheaply.")
+    parser.add_argument("--series-ticker", type=str, default=None,
+                        help="Narrow discovery to a single Kalshi series (e.g. KXNBAGAME, KXPRES).")
+    parser.add_argument("--skip-coarse-filter", action="store_true",
+                        help="Bypass the layer-2 LLM coarse filter. Useful when "
+                             "the eligible universe is already small (e.g. one series).")
+    parser.add_argument("--coarse-filter-parallelism", type=int, default=4,
+                        help="Max concurrent haiku calls in the coarse filter stage.")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -58,7 +65,7 @@ def main() -> int:
     anthropic_client = Anthropic(api_key=anthropic_api_key)
     kalshi_client = KalshiClient(BASE_URL, API_KEY_ID, PRIVATE_KEY_PATH)
 
-    killswitch = runtime.Killswitch()
+    killswitch = runtime.Killswitch(cash_floor_cents=0)
     runtime.install_signal_handlers()
 
     result = orchestrator.run_cycle(
@@ -72,6 +79,9 @@ def main() -> int:
         dry_run=not args.live,
         skip_research=args.no_research,
         killswitch=killswitch,
+        series_ticker=args.series_ticker,
+        skip_coarse_filter=args.skip_coarse_filter,
+        coarse_filter_parallelism=args.coarse_filter_parallelism,
     )
     print(json.dumps(result, indent=2, default=str))
     return 0 if result.get("status") == "ok" else 1
