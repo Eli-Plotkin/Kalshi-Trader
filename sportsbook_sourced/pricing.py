@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections import defaultdict
 from datetime import datetime, timezone
 from statistics import pstdev
@@ -40,11 +41,18 @@ def kalshi_fee_cents_per_contract(price_cents: int) -> float:
 
 
 def exact_kalshi_fee_cents(contract_count: int, price_cents: int) -> int:
-    """Ceiling-to-cent total fee estimate for a Kalshi order."""
+    """Ceiling-to-cent total fee estimate for a Kalshi order.
+
+    Uses a small epsilon when ceiling because the underlying product
+    `0.07 * count * (price/100) * (1 - price/100)` is a float and values
+    that are exact rational multiples of a cent (e.g. 4 contracts at 50c =
+    7.0c) can land at 7.000000000000001 in IEEE-754, which would wrongly
+    push the ceiling to 8.
+    """
     if contract_count <= 0:
         return 0
     raw_cents = contract_count * kalshi_fee_cents_per_contract(price_cents)
-    return int(raw_cents) if raw_cents == int(raw_cents) else int(raw_cents) + 1
+    return math.ceil(raw_cents - 1e-9)
 
 
 def _book_weight(bookmaker: str, *, stale: bool, weights: SourceWeights) -> float:

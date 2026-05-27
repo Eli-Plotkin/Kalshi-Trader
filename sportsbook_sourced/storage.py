@@ -123,9 +123,17 @@ CREATE INDEX IF NOT EXISTS idx_opportunities_ticker_time ON opportunities(kalshi
 """
 
 
-def init_db(path: Path = DB_PATH) -> sqlite3.Connection:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path))
+def init_db(path: Path | None = None) -> sqlite3.Connection:
+    """Open the SQLite DB and ensure schema exists.
+
+    Default `path` is resolved at call time (not import time) so tests can
+    monkeypatch the module-level `DB_PATH` constant and the change takes
+    effect immediately. Callers passing an explicit `path` still get
+    exactly that path.
+    """
+    resolved = Path(path) if path is not None else DB_PATH
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(resolved))
     conn.execute("PRAGMA journal_mode=WAL")
     with conn:
         conn.executescript(SCHEMA)

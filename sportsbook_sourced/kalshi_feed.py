@@ -2,9 +2,23 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from agent_trader.market_discovery import dollars_str_to_cents
-
 from .schemas import KalshiMarketSnapshot
+
+
+def dollars_str_to_cents(value) -> int:
+    """Convert Kalshi dollar-string prices (e.g. "0.4200") to integer cents.
+
+    Kalshi quotes prices as decimal-dollar strings via the REST API. Downstream
+    code in this package uses integer cents throughout. Returns 0 for None,
+    empty string, or any value that can't be parsed as a float — defensive
+    against malformed payloads.
+    """
+    if value is None or value == "":
+        return 0
+    try:
+        return int(round(float(value) * 100))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _parse_ts(value: str | None):
