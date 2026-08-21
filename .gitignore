@@ -228,5 +228,13 @@ data/sportsbook_sourced.sqlite*
 # Ignore local logs
 **/trade_bot.log*
 **/portfolio_data.json*.json
+*.log
+logs/
+
+# Ignore scratch/log text dumps, but keep the ones we track on purpose
 *.txt
+!requirements.txt
+!requirements-*.txt
+!**/requirements.txt
+
 .DS_Store
