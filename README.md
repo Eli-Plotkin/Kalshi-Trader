@@ -15,7 +15,7 @@ independent packages on top of one shared HTTP client:
 | `kalshi/`         | Signed-request HTTP client + shared credentials. No business logic.        | _imported by everything else_                |
 | `agent_trader/`   | Autonomous LLM-driven research-and-trade agent (this README's focus).      | `python -m agent_trader.scheduler`           |
 | `nba_trading/`    | NBA "favorite in price range" bot. Bid only when ask ∈ [MIN, MAX], expires at tip-off. | `python -m nba_trading.main`     |
-| `data_retrieval/` | Kalshi historicals — NBA volatility, research datasets. Self-contained.    | `python -m data_retrieval.build_research_dataset` |
+| `misprice_discovery/` | Kalshi historicals — NBA volatility, research datasets. Self-contained.    | `python -m misprice_discovery.build_research_dataset` |
 
 Dependency direction is strictly downward:
 `agent_trader` → `kalshi`, `nba_trading` → `kalshi`, `data_retrieval` → (nothing).
