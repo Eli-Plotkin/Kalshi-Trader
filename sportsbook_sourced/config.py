@@ -26,7 +26,15 @@ class ScannerConfig:
     min_net_edge_cents: float = 3.0
     min_mapping_confidence: float = 0.92
     max_odds_staleness_seconds: int = 180
-    max_commence_time_delta_minutes: int = 30
+
+    # Kalshi game markets close for *settlement*, which is hours after the
+    # event starts (a ~2.5h NBA game typically closes 3-4h after tip; NFL
+    # runs longer). So the temporal same-game check is directional: a market
+    # closing before the event starts is a genuine mismatch, a market closing
+    # a few hours after it is normal.
+    max_close_before_commence_minutes: int = 15
+    max_settlement_window_minutes: int = 480
+
     max_book_disagreement_cents: float = 8.0
     min_source_count: int = 2
     min_sharp_source_count: int = 0
