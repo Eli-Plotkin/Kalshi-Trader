@@ -230,6 +230,7 @@ data/sportsbook_sourced.sqlite*
 **/portfolio_data.json*.json
 *.log
 logs/
+*.sqlite*
 
 # Ignore scratch/log text dumps, but keep the ones we track on purpose
 *.txt
