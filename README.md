@@ -4,21 +4,21 @@
 > first real decision rows are verified in `chain_log`. Halted before meaningful
 > forward paper trading concluded. See [Project status](#project-status) for what
 > shipped, what's reusable across other projects, and the two structural reasons
-> it stopped here. The other packages (`kalshi/`, `nba_trading/`, `data_retrieval/`)
+> it stopped here. The other packages (`kalshi/`, `nba_trading/`, `misprice_discovery/`)
 > are unaffected.
 
 Monorepo for [Kalshi](https://kalshi.com) trading experiments. Four
 independent packages on top of one shared HTTP client:
 
-| Package           | What it is                                                                 | Entry point                                  |
-| ----------------- | -------------------------------------------------------------------------- | -------------------------------------------- |
-| `kalshi/`         | Signed-request HTTP client + shared credentials. No business logic.        | _imported by everything else_                |
-| `agent_trader/`   | Autonomous LLM-driven research-and-trade agent (this README's focus).      | `python -m agent_trader.scheduler`           |
-| `nba_trading/`    | NBA "favorite in price range" bot. Bid only when ask ∈ [MIN, MAX], expires at tip-off. | `python -m nba_trading.main`     |
-| `misprice_discovery/` | Kalshi historicals — NBA volatility, research datasets. Self-contained.    | `python -m misprice_discovery.build_research_dataset` |
+| Package               | What it is                                                                             | Entry point                                           |
+| --------------------- | -------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| `kalshi/`             | Signed-request HTTP client + shared credentials. No business logic.                    | _imported by everything else_                         |
+| `agent_trader/`       | Autonomous LLM-driven research-and-trade agent (this README's focus).                  | `python -m agent_trader.scheduler`                    |
+| `nba_trading/`        | NBA "favorite in price range" bot. Bid only when ask ∈ [MIN, MAX], expires at tip-off. | `python -m nba_trading.main`                          |
+| `misprice_discovery/` | Kalshi historicals — NBA volatility, research datasets. Self-contained.                | `python -m misprice_discovery.build_research_dataset` |
 
 Dependency direction is strictly downward:
-`agent_trader` → `kalshi`, `nba_trading` → `kalshi`, `data_retrieval` → (nothing).
+`agent_trader` → `kalshi`, `nba_trading` → `kalshi`, `misprice_discovery` → (nothing).
 The two trading packages do not import each other and share no config.
 
 This README's runbook is for `agent_trader`. The other two are documented
@@ -119,20 +119,20 @@ echo $! > scheduler.pid
 
 Scheduler defaults:
 
-| flag                     | default | meaning                                            |
-| ------------------------ | ------- | -------------------------------------------------- |
-| `--cycle-interval-min`   | 30      | minutes between cycles                             |
-| `--reflection-hour-utc`  | 23      | hour-of-day (UTC) for daily reflection job        |
-| `--reflection-minute-utc`| 55      | minute-of-hour for daily reflection job           |
-| `--reflection-budget`    | 1.50    | USD cap for the reflection LLM call                |
-| `--top-n`                | 5       | tickers surfaced by triage per cycle              |
-| `--market-budget`        | 0.50    | USD cap per market per cycle                       |
-| `--cycle-budget`         | 3.00    | USD cap per cycle, summed across all markets       |
-| `--min-volume`           | 100     | minimum 24h volume to be eligible                  |
-| `--min-hours`            | 48      | minimum hours-to-close to be eligible             |
-| `--live`                 | off     | actually place orders                              |
-| `--no-research`          | off     | use stub findings instead of web search           |
-| `--run-once`             | off     | run a single cycle and exit                       |
+| flag                      | default | meaning                                      |
+| ------------------------- | ------- | -------------------------------------------- |
+| `--cycle-interval-min`    | 30      | minutes between cycles                       |
+| `--reflection-hour-utc`   | 23      | hour-of-day (UTC) for daily reflection job   |
+| `--reflection-minute-utc` | 55      | minute-of-hour for daily reflection job      |
+| `--reflection-budget`     | 1.50    | USD cap for the reflection LLM call          |
+| `--top-n`                 | 5       | tickers surfaced by triage per cycle         |
+| `--market-budget`         | 0.50    | USD cap per market per cycle                 |
+| `--cycle-budget`          | 3.00    | USD cap per cycle, summed across all markets |
+| `--min-volume`            | 100     | minimum 24h volume to be eligible            |
+| `--min-hours`             | 48      | minimum hours-to-close to be eligible        |
+| `--live`                  | off     | actually place orders                        |
+| `--no-research`           | off     | use stub findings instead of web search      |
+| `--run-once`              | off     | run a single cycle and exit                  |
 
 Overlapping cycles are dropped (`max_instances=1`, `coalesce=True`); if a
 cycle runs long, the next scheduled fire is skipped, not queued.
@@ -226,7 +226,6 @@ python -m agent_trader.reflect --since 7d --budget 3.00
 
 ---
 
-
 ## What never shipped
 
 The project froze before reaching paper-trading at scale, so several items
@@ -297,7 +296,7 @@ size: hundreds of graded cycles before the signal stabilizes.
 through a new prompt to measure improvement looks like the natural
 evaluation path. It doesn't work for LLM+web_search agents because the
 historical truth needed to grade a replay is the same information that
-the replay would need to *retrieve* — and that information has changed
+the replay would need to _retrieve_ — and that information has changed
 between then and now. Specifically:
 
 - **Training data leaks outcomes.** Opus 4.7 knows who won every NBA
@@ -309,7 +308,7 @@ between then and now. Specifically:
 - **Time-restricted prompting doesn't help** — the model already knows
   the answer from training.
 
-The only stage that *can* be replayed cleanly is the decider, against
+The only stage that _can_ be replayed cleanly is the decider, against
 already-logged findings. That evaluates decider-prompt changes
 deterministically. It can't evaluate any change upstream of stored
 findings — because evaluating those requires re-running research, which
