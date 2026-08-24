@@ -23,35 +23,53 @@ def scan_opportunity(
     config: ScannerConfig,
     computed_at: datetime | None = None,
 ) -> Opportunity:
-    """Compute the best YES/NO opportunity for one mapped market."""
+    """Compute the best YES/NO opportunity for one mapped market.
+
+    `mapping.mapped_yes_outcome` can be `None` (ambiguous team match, see
+    `mapper.build_mapping`). `build_mapping` already records an
+    `ambiguous_yes_outcome` mismatch flag in that case, which forces a skip
+    below — but pricing still can't proceed without knowing which side YES
+    means, so that branch is skipped entirely rather than guessing.
+    """
     computed_at = computed_at or datetime.now(timezone.utc)
-    fair_yes = fair_yes_probability(mapping, fair_price)
-    fair_no = 1.0 - fair_yes
 
-    yes_price = market.yes_ask_cents
-    no_price = max(0, 100 - market.yes_bid_cents)
-
-    yes_gross = fair_yes * 100.0 - yes_price
-    no_gross = fair_no * 100.0 - no_price
-
-    if yes_gross >= no_gross:
+    if mapping.mapped_yes_outcome is None:
         side = "yes"
-        price = yes_price
-        fair_prob = fair_yes
-        gross_edge = yes_gross
+        price = market.yes_ask_cents
+        fair_prob = 0.0
+        gross_edge = 0.0
+        fee = 0.0
+        net_edge = 0.0
+        max_contracts = 0
     else:
-        side = "no"
-        price = no_price
-        fair_prob = fair_no
-        gross_edge = no_gross
+        fair_yes = fair_yes_probability(mapping, fair_price)
+        fair_no = 1.0 - fair_yes
 
-    fee = kalshi_fee_cents_per_contract(price)
-    buffers = (
-        config.liquidity_buffer_cents
-        + config.stale_odds_buffer_cents
-        + config.mapping_risk_buffer_cents
-    )
-    net_edge = gross_edge - fee - buffers
+        yes_price = market.yes_ask_cents
+        no_price = max(0, 100 - market.yes_bid_cents)
+
+        yes_gross = fair_yes * 100.0 - yes_price
+        no_gross = fair_no * 100.0 - no_price
+
+        if yes_gross >= no_gross:
+            side = "yes"
+            price = yes_price
+            fair_prob = fair_yes
+            gross_edge = yes_gross
+        else:
+            side = "no"
+            price = no_price
+            fair_prob = fair_no
+            gross_edge = no_gross
+
+        fee = kalshi_fee_cents_per_contract(price)
+        buffers = (
+            config.liquidity_buffer_cents
+            + config.stale_odds_buffer_cents
+            + config.mapping_risk_buffer_cents
+        )
+        net_edge = gross_edge - fee - buffers
+        max_contracts = _max_contracts_for_budget(price, config.max_position_usd)
 
     reasons: list[str] = []
     if mapping.confidence < config.min_mapping_confidence:
@@ -66,10 +84,8 @@ def scan_opportunity(
         reasons.append(f"odds_stale:{fair_price.staleness_seconds}s")
     if fair_price.book_disagreement_cents > config.max_book_disagreement_cents:
         reasons.append(f"book_disagreement:{fair_price.book_disagreement_cents:.1f}c")
-    if net_edge < config.min_net_edge_cents:
+    if mapping.mapped_yes_outcome is not None and net_edge < config.min_net_edge_cents:
         reasons.append(f"net_edge:{net_edge:.2f}c<{config.min_net_edge_cents:.2f}c")
-
-    max_contracts = _max_contracts_for_budget(price, config.max_position_usd)
     if max_contracts <= 0:
         reasons.append("no_contracts_for_budget")
 

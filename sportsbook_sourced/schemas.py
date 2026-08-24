@@ -70,7 +70,7 @@ class EventMapping:
     mapping_id: str
     kalshi_ticker: str
     sportsbook_event_id: str
-    mapped_yes_outcome: Literal["home", "away"]
+    mapped_yes_outcome: Optional[Literal["home", "away"]]
     confidence: float
     mismatch_flags: list[str]
     created_at: datetime

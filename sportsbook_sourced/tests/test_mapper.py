@@ -34,22 +34,36 @@ def test_normalize_collapses_punctuation_and_whitespace():
     assert normalize_team_name("  Los Angeles,  LAKERS!  ") == "los angeles lakers"
 
 
-def test_normalize_resolves_alias():
+def test_normalize_resolves_tricode():
     assert normalize_team_name("OKC") == "oklahoma city thunder"
-    assert normalize_team_name("San Antonio") == "san antonio spurs"
+    assert normalize_team_name("gsw") == "golden state warriors"
 
 
 def test_normalize_passthrough_for_unknown():
     assert normalize_team_name("Boston Celtics") == "boston celtics"
+    # Multi-word shorthand is not a tricode and is left as-is; title_similarity's
+    # token-subset matching (not normalize_team_name) is what resolves it.
+    assert normalize_team_name("San Antonio") == "san antonio"
 
 
 def test_title_similarity_exact_match():
     assert title_similarity("Lakers", "lakers") == 1.0
 
 
-def test_title_similarity_alias_resolves():
+def test_title_similarity_tricode_resolves():
     # Both normalize to "oklahoma city thunder"
     assert title_similarity("OKC", "Oklahoma City Thunder") == 1.0
+
+
+def test_title_similarity_short_name_is_a_token_subset_of_the_full_name():
+    """Kalshi always sends short names ("Lakers", "76ers"); sportsbooks send
+    full club names. A short name whose tokens are a subset of the full
+    name's tokens is the same team, regardless of the length difference that
+    sinks character-overlap scoring."""
+    assert title_similarity("Lakers", "Los Angeles Lakers") == 1.0
+    assert title_similarity("Warriors", "Golden State Warriors") == 1.0
+    assert title_similarity("76ers", "Philadelphia 76ers") == 1.0
+    assert title_similarity("San Antonio", "San Antonio Spurs") == 1.0
 
 
 def test_title_similarity_unrelated_low():
@@ -136,10 +150,13 @@ def test_infer_yes_outcome_too_close_to_call():
     a distinct rejection path from `test_infer_yes_outcome_ambiguous_returns_none`.
     `infer_yes_outcome` returns None for both, so `conf` is the only signal
     that distinguishes "no match" from "matched, but which one?".
+
+    "Los Angeles" is a real same-city ambiguity: it's a token subset of both
+    full club names, so both sides saturate at 1.0 and the tie-break (score
+    diff < 0.08) is what rejects — not the plausibility floor.
     """
-    # yes_subtitle is similar to both teams — should reject as ambiguous
-    market = _market(yes_subtitle="The Team")
-    event = _event(home="The Lakers", away="The Celtics")
+    market = _market(yes_subtitle="Los Angeles")
+    event = _event(home="Los Angeles Lakers", away="Los Angeles Clippers")
     outcome, conf = infer_yes_outcome(market, event)
     assert outcome is None
     assert conf >= 0.55, (
@@ -174,8 +191,10 @@ def test_build_mapping_flags_ambiguous_yes_outcome():
         market=market, event=event, config=DEFAULT_SCANNER_CONFIG, created_at=now
     )
     assert "ambiguous_yes_outcome" in mapping.mismatch_flags
-    # Falls back to home
-    assert mapping.mapped_yes_outcome == "home"
+    # An ambiguous match must not be recorded as a definite side (P0.3): a
+    # coin-flip stored as "home" would silently invert the fair probability
+    # for half of all ambiguous markets the moment the confidence gate loosens.
+    assert mapping.mapped_yes_outcome is None
 
 
 @pytest.mark.parametrize("settlement_hours", [0, 1.5, 3, 5, 8])

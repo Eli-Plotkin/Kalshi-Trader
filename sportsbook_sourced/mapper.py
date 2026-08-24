@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime, timedelta, timezone
-from difflib import SequenceMatcher
 from uuid import uuid4
 
 from .config import ScannerConfig
@@ -22,28 +21,45 @@ _MONTH_ABBREVIATIONS: dict[str, int] = {
 }
 
 
-TEAM_ALIASES: dict[str, str] = {
-    "okc": "oklahoma city thunder",
-    "oklahoma city": "oklahoma city thunder",
-    "sas": "san antonio spurs",
-    "san antonio": "san antonio spurs",
-    "nyk": "new york knicks",
-    "new york": "new york knicks",
-    "lal": "los angeles lakers",
-    "la lakers": "los angeles lakers",
-    "lac": "los angeles clippers",
-    "la clippers": "los angeles clippers",
+NBA_TRICODES: dict[str, str] = {
+    "atl": "atlanta hawks", "bos": "boston celtics", "bkn": "brooklyn nets",
+    "cha": "charlotte hornets", "chi": "chicago bulls", "cle": "cleveland cavaliers",
+    "dal": "dallas mavericks", "den": "denver nuggets", "det": "detroit pistons",
+    "gsw": "golden state warriors", "hou": "houston rockets", "ind": "indiana pacers",
+    "lac": "los angeles clippers", "lal": "los angeles lakers", "mem": "memphis grizzlies",
+    "mia": "miami heat", "mil": "milwaukee bucks", "min": "minnesota timberwolves",
+    "nop": "new orleans pelicans", "nyk": "new york knicks", "okc": "oklahoma city thunder",
+    "orl": "orlando magic", "phi": "philadelphia 76ers", "phx": "phoenix suns",
+    "por": "portland trail blazers", "sac": "sacramento kings", "sas": "san antonio spurs",
+    "tor": "toronto raptors", "uta": "utah jazz", "was": "washington wizards",
 }
 
 
 def normalize_team_name(value: str) -> str:
     text = re.sub(r"[^a-z0-9 ]+", " ", value.lower())
     text = re.sub(r"\s+", " ", text).strip()
-    return TEAM_ALIASES.get(text, text)
+    return NBA_TRICODES.get(text, text)
+
+
+def _tokens(value: str) -> set[str]:
+    return set(normalize_team_name(value).split())
 
 
 def title_similarity(a: str, b: str) -> float:
-    return SequenceMatcher(None, normalize_team_name(a), normalize_team_name(b)).ratio()
+    """Score how well a short Kalshi team name matches a full club name.
+
+    Kalshi sends short names ("Lakers", "76ers") or tricodes ("LAL", "GSW");
+    sportsbooks send full club names ("Los Angeles Lakers"). Character-overlap
+    scoring (the old `SequenceMatcher` approach) penalizes exactly the length
+    difference this mismatch always has. Token containment doesn't: a short
+    name that is a subset of the full name's tokens is the same team.
+    """
+    tokens_a, tokens_b = _tokens(a), _tokens(b)
+    if not tokens_a or not tokens_b:
+        return 0.0
+    if tokens_a <= tokens_b or tokens_b <= tokens_a:
+        return 1.0
+    return len(tokens_a & tokens_b) / len(tokens_a | tokens_b)
 
 
 def game_date_from_ticker(ticker: str) -> date | None:
@@ -178,7 +194,6 @@ def build_mapping(
     yes_outcome, team_conf = infer_yes_outcome(market, event)
     if yes_outcome is None:
         flags.append("ambiguous_yes_outcome")
-        yes_outcome = "home"
 
     time_conf, time_flags = check_temporal_consistency(market, event, config)
     flags.extend(time_flags)
@@ -188,7 +203,7 @@ def build_mapping(
         mapping_id=str(uuid4()),
         kalshi_ticker=market.ticker,
         sportsbook_event_id=event.event_id,
-        mapped_yes_outcome=yes_outcome,  # type: ignore[arg-type]
+        mapped_yes_outcome=yes_outcome,
         confidence=confidence,
         mismatch_flags=flags,
         created_at=created_at,
@@ -196,5 +211,10 @@ def build_mapping(
 
 
 def fair_yes_probability(mapping: EventMapping, fair_price: FairPrice) -> float:
+    if mapping.mapped_yes_outcome is None:
+        raise ValueError(
+            f"cannot price {mapping.kalshi_ticker}: mapping is ambiguous "
+            f"(mapped_yes_outcome is None)"
+        )
     return fair_price.home_prob if mapping.mapped_yes_outcome == "home" else fair_price.away_prob
 
