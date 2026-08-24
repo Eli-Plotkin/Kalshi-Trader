@@ -239,3 +239,4 @@ logs/
 !**/requirements.txt
 
 .DS_Store
+*/CLAUDE.md
