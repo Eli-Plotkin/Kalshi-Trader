@@ -45,6 +45,37 @@ def _tokens(value: str) -> set[str]:
     return set(normalize_team_name(value).split())
 
 
+# The one NBA mascot that isn't a single trailing word ("Portland Trail
+# Blazers" -> "trail blazers", not "blazers"). Every other team's mascot is
+# derived automatically below, off the single `NBA_TRICODES` table, so this
+# is the only place a new exception would need adding.
+_MULTIWORD_MASCOTS: frozenset[str] = frozenset({"trail blazers"})
+
+
+def _mascot_of(full_name: str) -> str:
+    for mascot in _MULTIWORD_MASCOTS:
+        if full_name.endswith(mascot):
+            return mascot
+    return full_name.rsplit(" ", 1)[-1]
+
+
+# Derived, not hand-duplicated: the distinctive nickname portion of each of
+# the 30 full names already in `NBA_TRICODES`, e.g. "los angeles clippers" ->
+# "clippers". Used to recognize a team by its mascot regardless of whatever
+# else surrounds it in the query -- a city abbreviation ("LA Clippers"), a
+# tricode-and-mascot combo, or noise from a market's raw title.
+NBA_MASCOTS: frozenset[str] = frozenset(_mascot_of(name) for name in NBA_TRICODES.values())
+
+
+def _known_mascot_in(tokens: set[str]) -> str | None:
+    """The one known NBA mascot phrase whose tokens are all present in
+    `tokens`, or None if none is -- or if more than one is, e.g. a market
+    title naming both teams. That's a real ambiguity, not something to guess
+    through, so it's treated the same as finding none."""
+    found = [mascot for mascot in NBA_MASCOTS if set(mascot.split()) <= tokens]
+    return found[0] if len(found) == 1 else None
+
+
 def title_similarity(a: str, b: str) -> float:
     """Score how well a short Kalshi team name matches a full club name.
 
@@ -53,10 +84,26 @@ def title_similarity(a: str, b: str) -> float:
     scoring (the old `SequenceMatcher` approach) penalizes exactly the length
     difference this mismatch always has. Token containment doesn't: a short
     name that is a subset of the full name's tokens is the same team.
+
+    A compound like "LA Clippers" isn't a token subset of "Los Angeles
+    Clippers" ("la" != "los"/"angeles" as strings), so plain subset
+    containment would fall to Jaccard and score only 0.25 -- a false
+    negative on an obviously correct match, purely because a city
+    abbreviation isn't spelled out. Checking for a shared *known* mascot
+    first fixes that: "clippers" is recognizable in both strings regardless
+    of whatever else ("LA", "vs", a tricode) surrounds it. This only ever
+    fires on an exact, curated nickname (`NBA_MASCOTS`) -- unlike expanding
+    "LA" -> "los angeles" (deliberately not done, see P0.2), it can't
+    manufacture a match: a bare "LA" contains no known mascot at all.
     """
     tokens_a, tokens_b = _tokens(a), _tokens(b)
     if not tokens_a or not tokens_b:
         return 0.0
+
+    mascot_a, mascot_b = _known_mascot_in(tokens_a), _known_mascot_in(tokens_b)
+    if mascot_a is not None and mascot_a == mascot_b:
+        return 1.0
+
     if tokens_a <= tokens_b or tokens_b <= tokens_a:
         return 1.0
     return len(tokens_a & tokens_b) / len(tokens_a | tokens_b)
@@ -165,6 +212,14 @@ def check_temporal_consistency(
     return confidence, flags
 
 
+# Shared with `pipeline.py::find_event_for_market`, which runs the same
+# team-name signal across a *list* of candidate events instead of one fixed
+# pair — both call sites need the same "is this a real match" and "is this
+# too close to call" thresholds.
+MIN_TEAM_SIMILARITY = 0.55
+AMBIGUITY_GAP = 0.08
+
+
 def infer_yes_outcome(market: KalshiMarketSnapshot, event: SportsbookEvent) -> tuple[str | None, float]:
     """Infer whether Kalshi YES maps to home or away.
 
@@ -174,9 +229,9 @@ def infer_yes_outcome(market: KalshiMarketSnapshot, event: SportsbookEvent) -> t
     yes_text = market.yes_subtitle or market.title
     home_score = title_similarity(yes_text, event.home_team)
     away_score = title_similarity(yes_text, event.away_team)
-    if max(home_score, away_score) < 0.55:
+    if max(home_score, away_score) < MIN_TEAM_SIMILARITY:
         return None, max(home_score, away_score)
-    if abs(home_score - away_score) < 0.08:
+    if abs(home_score - away_score) < AMBIGUITY_GAP:
         return None, max(home_score, away_score)
     return ("home" if home_score > away_score else "away"), max(home_score, away_score)
 

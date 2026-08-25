@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from .schemas import KalshiMarketSnapshot
+from .config import MONEYLINE_SERIES_TICKERS
+from .schemas import KalshiMarketSnapshot, League
 
 
 def dollars_str_to_cents(value) -> int:
@@ -55,11 +56,28 @@ def snapshot_from_market(
 def list_sports_markets(
     *,
     kalshi_client,
-    series_ticker: str,
+    league: League,
     max_pages: int = 10,
     limit: int = 200,
 ) -> list[KalshiMarketSnapshot]:
-    """Fetch open Kalshi sports markets for a series and snapshot best quotes."""
+    """Fetch open Kalshi moneyline markets for a league and snapshot best quotes.
+
+    Takes a `league`, not a free-form series ticker: `MONEYLINE_SERIES_TICKERS`
+    is the single place that maps a league to its moneyline series, so it's
+    structurally impossible to point this at a non-moneyline series (spreads,
+    totals) by accident. `KalshiMarketSnapshot` itself carries no market-type
+    field, so this is the actual enforcement boundary for this package's
+    moneyline-only scope (`config.SUPPORTED_MARKET_TYPES`), not just a
+    convention callers are trusted to follow.
+    """
+    try:
+        series_ticker = MONEYLINE_SERIES_TICKERS[league]
+    except KeyError:
+        raise ValueError(
+            f"no known moneyline series ticker for league {league!r} -- "
+            f"supported leagues: {sorted(MONEYLINE_SERIES_TICKERS)}"
+        ) from None
+
     out: list[KalshiMarketSnapshot] = []
     cursor = None
     pages = 0

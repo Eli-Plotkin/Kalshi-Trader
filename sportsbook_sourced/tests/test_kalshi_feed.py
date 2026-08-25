@@ -172,9 +172,11 @@ class FakeKalshiClient:
         self._orderbooks = orderbooks or {}
         self.list_calls = 0
         self.orderbook_calls = []
+        self.series_tickers_seen = []
 
     def list_markets(self, *, status, limit, cursor, series_ticker):
         self.list_calls += 1
+        self.series_tickers_seen.append(series_ticker)
         if not self._pages:
             return [], None
         markets, next_cursor = self._pages.pop(0)
@@ -186,11 +188,34 @@ class FakeKalshiClient:
 
 
 class TestListSportsMarkets:
+    def test_rejects_a_league_with_no_known_moneyline_series(self):
+        """`list_sports_markets` takes a league, not a free-form series
+        ticker, specifically so it's impossible to accidentally point it at
+        a non-moneyline series -- `KalshiMarketSnapshot` has no market-type
+        field to catch that after the fact (see config.MONEYLINE_SERIES_TICKERS)."""
+        client = FakeKalshiClient(pages=[([], None)])
+        with pytest.raises(ValueError, match="no known moneyline series ticker"):
+            list_sports_markets(kalshi_client=client, league="mlb")
+        assert client.list_calls == 0, "must reject before ever calling the client"
+
+    @pytest.mark.parametrize("league,expected_series", [
+        ("nba", "KXNBAGAME"),
+        ("nfl", "KXNFLGAME"),
+    ])
+    def test_resolves_the_correct_series_ticker_per_league(self, league, expected_series):
+        """The whole point of taking a `league` instead of a free-form
+        ticker is that the *right* moneyline series gets used -- a test that
+        only checks "a supported league doesn't raise" would still pass if
+        every league silently resolved to the same (or the wrong) series."""
+        client = FakeKalshiClient(pages=[([], None)])
+        list_sports_markets(kalshi_client=client, league=league)
+        assert client.series_tickers_seen == [expected_series]
+
     def test_single_page_returns_all_markets(self):
         markets = [_kalshi_market(ticker="A"), _kalshi_market(ticker="B")]
         client = FakeKalshiClient(pages=[(markets, None)])
         snapshots = list_sports_markets(
-            kalshi_client=client, series_ticker="KX-NBAGAME"
+            kalshi_client=client, league="nba"
         )
         assert len(snapshots) == 2
         assert {s.ticker for s in snapshots} == {"A", "B"}
@@ -203,7 +228,7 @@ class TestListSportsMarkets:
             pages=[(page1, "cur1"), (page2, "cur2"), (page3, None)]
         )
         snapshots = list_sports_markets(
-            kalshi_client=client, series_ticker="KX-NBAGAME"
+            kalshi_client=client, league="nba"
         )
         assert [s.ticker for s in snapshots] == ["A", "B", "C"]
         assert client.list_calls == 3
@@ -213,7 +238,7 @@ class TestListSportsMarkets:
         pages = [([_kalshi_market(ticker=f"T{i}")], f"c{i}") for i in range(10)]
         client = FakeKalshiClient(pages=pages)
         snapshots = list_sports_markets(
-            kalshi_client=client, series_ticker="KX-NBAGAME", max_pages=3
+            kalshi_client=client, league="nba", max_pages=3
         )
         assert client.list_calls == 3
         assert len(snapshots) == 3
@@ -221,14 +246,14 @@ class TestListSportsMarkets:
     def test_empty_response_terminates(self):
         client = FakeKalshiClient(pages=[([], None)])
         snapshots = list_sports_markets(
-            kalshi_client=client, series_ticker="KX-NBAGAME"
+            kalshi_client=client, league="nba"
         )
         assert snapshots == []
 
     def test_orderbook_fetched_per_market(self):
         markets = [_kalshi_market(ticker="A"), _kalshi_market(ticker="B")]
         client = FakeKalshiClient(pages=[(markets, None)])
-        list_sports_markets(kalshi_client=client, series_ticker="KX-NBAGAME")
+        list_sports_markets(kalshi_client=client, league="nba")
         assert client.orderbook_calls == ["A", "B"]
 
     def test_orderbook_attached_to_snapshot(self):
@@ -236,6 +261,6 @@ class TestListSportsMarkets:
         markets = [_kalshi_market(ticker="A")]
         client = FakeKalshiClient(pages=[(markets, None)], orderbooks={"A": ob})
         [snap] = list_sports_markets(
-            kalshi_client=client, series_ticker="KX-NBAGAME"
+            kalshi_client=client, league="nba"
         )
         assert snap.raw_orderbook == ob

@@ -71,6 +71,87 @@ def test_title_similarity_unrelated_low():
 
 
 # ────────────────────────────────────────────────────────────────────────────
+# MIN_TEAM_SIMILARITY floor — what 0.55 actually gates
+# ────────────────────────────────────────────────────────────────────────────
+
+
+def test_min_team_similarity_floor_is_inherited_not_recalibrated():
+    assert title_similarity("Lakers", "Los Angeles Lakers") == 1.0
+    assert title_similarity("Lakers", "Boston Celtics") == 0.0
+
+
+def test_nba_mascots_are_derived_correctly_from_the_tricode_table():
+    """`NBA_MASCOTS` is derived from `NBA_TRICODES.values()`, not
+    hand-duplicated -- pin the two things most likely to silently break that
+    derivation: 30 unique mascots (no two teams collapsing to the same
+    nickname) and the one multi-word exception actually surviving intact."""
+    assert len(mapper.NBA_MASCOTS) == 30
+    assert "trail blazers" in mapper.NBA_MASCOTS
+    assert "blazers" not in mapper.NBA_MASCOTS
+    assert "lakers" in mapper.NBA_MASCOTS
+    assert "clippers" in mapper.NBA_MASCOTS
+
+
+def test_a_city_abbreviation_plus_team_name_still_matches():
+    """"LA Clippers" instead of a bare "Clippers"
+    or the "lac" tricode — is NOT a token subset of "Los Angeles Clippers"
+    ("la" isn't literally "los"/"angeles"), so plain subset containment
+    would fall to Jaccard and score only 0.25: below the 0.55 floor, a false
+    negative on an obviously correct match. Recognizing the shared known
+    mascot ("clippers") fixes this without a city-name dictionary or an
+    "LA" -> "los angeles" expansion."""
+    assert title_similarity("LA Clippers", "Los Angeles Clippers") == 1.0
+    assert title_similarity("NY Knicks", "New York Knicks") == 1.0
+    assert title_similarity("SA Spurs", "San Antonio Spurs") == 1.0
+
+
+def test_the_mascot_match_is_robust_to_noise_beyond_just_abbreviations():
+    """Unlike a length-based heuristic (e.g. "strip 2-letter tokens"), a
+    known-mascot lookup doesn't care *what* surrounds the mascot -- a
+    tricode-and-mascot combo, or garbage from a raw market title, all
+    resolve the same way as long as exactly one known mascot is present."""
+    assert title_similarity("LAC Clippers", "Los Angeles Clippers") == 1.0
+    assert title_similarity("Game 7: Clippers Watch Party", "Los Angeles Clippers") == 1.0
+
+
+def test_the_mascot_match_does_not_manufacture_a_same_city_match():
+    """The fix only fires when a real, distinguishing mascot is present. A
+    bare "LA" contains no known mascot at all, so it still can't confidently
+    resolve to either LA team — and "LA Clippers" must not accidentally also
+    match the Lakers, since "clippers" isn't the Lakers' mascot."""
+    assert title_similarity("LA", "Los Angeles Lakers") < 0.55
+    assert title_similarity("LA", "Los Angeles Clippers") < 0.55
+    assert title_similarity("LA Clippers", "Los Angeles Lakers") < 0.55
+
+
+def test_noise_words_around_a_full_team_name_do_not_hurt_the_score():
+    """The subset check is symmetric (`tokens_a <= tokens_b or tokens_b <=
+    tokens_a`), so a query that *contains* the full team name plus extra
+    noise (a Kalshi market's raw `title` field, e.g. "X vs Y Winner") still
+    scores 1.0 against both teams — the 0.55 floor never even gets
+    consulted here. The resulting ambiguity (both sides at 1.0) is caught by
+    `infer_yes_outcome`'s tie-break gap, not by the floor."""
+    title = "Los Angeles Lakers vs Boston Celtics Winner"
+    assert title_similarity(title, "Los Angeles Lakers") == 1.0
+    assert title_similarity(title, "Boston Celtics") == 1.0
+
+    now = datetime(2026, 1, 15, tzinfo=timezone.utc)
+    outcome, score = infer_yes_outcome(
+        KalshiMarketSnapshot(
+            ticker="KXNBAGAME-26JAN14LALBOS-LAL", title=title, yes_subtitle=None,
+            close_time=None, yes_bid_cents=55, yes_ask_cents=57,
+            volume=0, open_interest=0, collected_at=now,
+        ),
+        SportsbookEvent(
+            event_id="e1", league="nba", home_team="Los Angeles Lakers",
+            away_team="Boston Celtics", commence_time=now,
+        ),
+    )
+    assert outcome is None
+    assert score == 1.0
+
+
+# ────────────────────────────────────────────────────────────────────────────
 # infer_yes_outcome
 # ────────────────────────────────────────────────────────────────────────────
 

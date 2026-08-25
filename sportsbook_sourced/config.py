@@ -6,6 +6,17 @@ from dataclasses import dataclass, field
 SUPPORTED_LEAGUES: tuple[str, ...] = ("nba", "nfl")
 SUPPORTED_MARKET_TYPES: tuple[str, ...] = ("moneyline",)
 
+# The moneyline ("who wins") series ticker per league -- verified against
+# kalshi_multisport_research_dataset.csv (see CLAUDE.md P0.1). Kalshi may run
+# separate series for spreads/totals under different tickers; this table is
+# the enforcement point that keeps `kalshi_feed.list_sports_markets` scoped
+# to moneyline only, since a `KalshiMarketSnapshot` has no market-type field
+# of its own to check after the fact.
+MONEYLINE_SERIES_TICKERS: dict[str, str] = {
+    "nba": "KXNBAGAME",
+    "nfl": "KXNFLGAME",
+}
+
 
 @dataclass(frozen=True)
 class SourceWeights:
