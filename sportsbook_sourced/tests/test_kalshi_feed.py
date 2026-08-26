@@ -9,6 +9,7 @@ import pytest
 from sportsbook_sourced.kalshi_feed import (
     dollars_str_to_cents,
     list_sports_markets,
+    resolved_yes_from_market,
     snapshot_from_market,
 )
 from sportsbook_sourced.schemas import KalshiMarketSnapshot
@@ -153,6 +154,25 @@ class TestSnapshotFromMarket:
         market.pop("title")
         snap = snapshot_from_market(market=market)
         assert snap.title == ""
+
+
+# ----------------------------------------------------------------------------
+# resolved_yes_from_market — settlement outcome parsing
+# ----------------------------------------------------------------------------
+
+
+class TestResolvedYesFromMarket:
+    def test_yes_result(self):
+        assert resolved_yes_from_market({"result": "yes"}) is True
+
+    def test_no_result(self):
+        assert resolved_yes_from_market({"result": "no"}) is False
+
+    def test_empty_result_is_not_settled(self):
+        assert resolved_yes_from_market({"result": ""}) is None
+
+    def test_missing_result_key_is_not_settled(self):
+        assert resolved_yes_from_market({"status": "open"}) is None
 
 
 # ----------------------------------------------------------------------------

@@ -53,6 +53,25 @@ def snapshot_from_market(
     )
 
 
+def resolved_yes_from_market(market: dict) -> bool | None:
+    """Whether Kalshi's YES side won, from a market payload (e.g.
+    `kalshi_client.get_market(ticker)`).
+
+    Field verified against real usage elsewhere in this repo --
+    `misprice_discovery/build_multisport_research_dataset.py` reads
+    `market.get("result") == "yes"` from the same API to compute realized
+    settlement outcomes. Returns `None` when the market hasn't settled yet
+    (`result` empty or absent); callers must treat that as "not resolved
+    yet", not as a NO outcome.
+    """
+    result = market.get("result")
+    if result == "yes":
+        return True
+    if result == "no":
+        return False
+    return None
+
+
 def list_sports_markets(
     *,
     kalshi_client,

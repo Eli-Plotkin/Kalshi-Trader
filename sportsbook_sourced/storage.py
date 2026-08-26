@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import asdict, is_dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -388,4 +389,64 @@ def insert_trade_evaluation(conn: sqlite3.Connection, evaluation: TradeEvaluatio
                 evaluation.pnl_cents,
             ),
         )
+
+
+def get_opportunity(conn: sqlite3.Connection, opportunity_id: str) -> Opportunity | None:
+    row = conn.execute(
+        """
+        SELECT opportunity_id, kalshi_ticker, sportsbook_event_id, side, action,
+               fair_prob, kalshi_price_cents, gross_edge_cents,
+               fee_cents_per_contract, net_edge_cents, max_contracts, reason,
+               computed_at
+        FROM opportunities WHERE opportunity_id = ?
+        """,
+        (opportunity_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return Opportunity(
+        opportunity_id=row[0], kalshi_ticker=row[1], sportsbook_event_id=row[2],
+        side=row[3], action=row[4], fair_prob=row[5], kalshi_price_cents=row[6],
+        gross_edge_cents=row[7], fee_cents_per_contract=row[8], net_edge_cents=row[9],
+        max_contracts=row[10], reason=row[11], computed_at=datetime.fromisoformat(row[12]),
+    )
+
+
+def get_filled_paper_order(conn: sqlite3.Connection, opportunity_id: str) -> PaperOrder | None:
+    """The order that actually filled for this opportunity, if any -- a
+    rejected order (no cash, or a `skip` action) isn't a position and has
+    nothing to settle. Most-recent-first in case more than one ever exists
+    for the same opportunity (nothing currently enforces at most one)."""
+    row = conn.execute(
+        """
+        SELECT paper_order_id, opportunity_id, ticker, side, action, count,
+               limit_price_cents, status, fill_model_version, created_at
+        FROM paper_orders
+        WHERE opportunity_id = ? AND status = 'filled'
+        ORDER BY created_at DESC LIMIT 1
+        """,
+        (opportunity_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return PaperOrder(
+        paper_order_id=row[0], opportunity_id=row[1], ticker=row[2], side=row[3],
+        action=row[4], count=row[5], limit_price_cents=row[6], status=row[7],
+        fill_model_version=row[8], created_at=datetime.fromisoformat(row[9]),
+    )
+
+
+def list_opportunities_pending_settlement(conn: sqlite3.Connection) -> list[str]:
+    """Opportunity IDs with a filled paper order but no settlement result
+    recorded yet -- either no `trade_evaluations` row at all, or one written
+    by a future close-phase pass with `resolved_side` still `NULL`."""
+    rows = conn.execute(
+        """
+        SELECT DISTINCT po.opportunity_id
+        FROM paper_orders po
+        LEFT JOIN trade_evaluations te ON te.opportunity_id = po.opportunity_id
+        WHERE po.status = 'filled' AND te.resolved_side IS NULL
+        """
+    ).fetchall()
+    return [row[0] for row in rows]
 

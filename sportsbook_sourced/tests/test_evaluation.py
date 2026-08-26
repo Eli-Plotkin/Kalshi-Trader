@@ -9,6 +9,7 @@ from sportsbook_sourced.evaluation import (
     evaluate_opportunity,
     realized_pnl_cents,
 )
+from sportsbook_sourced.pricing import exact_kalshi_fee_cents
 from sportsbook_sourced.schemas import Opportunity
 
 
@@ -121,6 +122,8 @@ def test_realized_pnl_unknown_side_raises():
 
 
 def test_evaluate_full_resolution_includes_clv_and_pnl():
+    # Bought YES at 42c x 10, resolved yes -> gross 580, minus the 18c entry
+    # fee (Kalshi charges on entry only, once, regardless of outcome) -> 562.
     opp = _opp(side="yes", price=42)
     eval_ = evaluate_opportunity(
         opportunity=opp,
@@ -129,8 +132,9 @@ def test_evaluate_full_resolution_includes_clv_and_pnl():
         count=10,
         evaluated_at=NOW,
     )
+    fee = exact_kalshi_fee_cents(10, 42)
     assert eval_.clv_cents == pytest.approx(13.0)
-    assert eval_.pnl_cents == 580.0
+    assert eval_.pnl_cents == pytest.approx(580.0 - fee)
     assert eval_.resolved_side == "yes"
     assert eval_.fair_prob_at_close == 0.55
 
@@ -156,5 +160,6 @@ def test_evaluate_no_close_data_zeros_clv():
         resolved_yes=True,
         count=10,
     )
+    fee = exact_kalshi_fee_cents(10, 42)
     assert eval_.clv_cents is None
-    assert eval_.pnl_cents == 580.0
+    assert eval_.pnl_cents == pytest.approx(580.0 - fee)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -201,3 +201,137 @@ class TestStoragePaths:
         # The default sqlite file should live under the repo's data/ folder.
         assert storage.DB_PATH.parent == storage.DATA_DIR
         assert storage.DB_PATH.suffix == ".sqlite"
+
+
+# ----------------------------------------------------------------------------
+# Readers — get_opportunity, get_filled_paper_order,
+# list_opportunities_pending_settlement (P1.7's settlement phase)
+# ----------------------------------------------------------------------------
+
+
+NOW = datetime(2026, 1, 15, 0, 0, tzinfo=timezone.utc)
+
+
+def _event(event_id="e1"):
+    return SportsbookEvent(
+        event_id=event_id, league="nba", home_team="Los Angeles Lakers",
+        away_team="Boston Celtics", commence_time=NOW,
+    )
+
+
+def _opportunity(opportunity_id="opp-1"):
+    return Opportunity(
+        opportunity_id=opportunity_id, kalshi_ticker="KXNBAGAME-26JAN14LALBOS-LAL",
+        sportsbook_event_id="e1", side="no", action="buy", fair_prob=0.65,
+        kalshi_price_cents=43, gross_edge_cents=22.0, fee_cents_per_contract=1.7,
+        net_edge_cents=17.3, max_contracts=23, reason="tradeable", computed_at=NOW,
+    )
+
+
+def _paper_order(opportunity_id="opp-1", *, status="filled", count=10, order_id="po-1",
+                  created_at=NOW):
+    return PaperOrder(
+        paper_order_id=order_id, opportunity_id=opportunity_id,
+        ticker="KXNBAGAME-26JAN14LALBOS-LAL", side="no", action="buy",
+        count=count, limit_price_cents=43, status=status,
+        fill_model_version="immediate_best_ask_v1", created_at=created_at,
+    )
+
+
+class TestGetOpportunity:
+    def test_round_trips_all_fields(self, tmp_path):
+        conn = storage.init_db(tmp_path / "t.sqlite")
+        storage.insert_sportsbook_event(conn, _event())
+        opp = _opportunity()
+        storage.insert_opportunity(conn, opp)
+
+        fetched = storage.get_opportunity(conn, "opp-1")
+        assert fetched == opp
+
+    def test_returns_none_for_unknown_id(self, tmp_path):
+        conn = storage.init_db(tmp_path / "t.sqlite")
+        assert storage.get_opportunity(conn, "does-not-exist") is None
+
+
+class TestGetFilledPaperOrder:
+    def test_returns_the_filled_order(self, tmp_path):
+        conn = storage.init_db(tmp_path / "t.sqlite")
+        storage.insert_sportsbook_event(conn, _event())
+        storage.insert_opportunity(conn, _opportunity())
+        order = _paper_order(status="filled")
+        storage.insert_paper_order(conn, order)
+
+        fetched = storage.get_filled_paper_order(conn, "opp-1")
+        assert fetched == order
+
+    def test_ignores_a_rejected_order(self, tmp_path):
+        """A rejected order isn't a position -- there's nothing to settle,
+        so it must not be returned as if it were."""
+        conn = storage.init_db(tmp_path / "t.sqlite")
+        storage.insert_sportsbook_event(conn, _event())
+        storage.insert_opportunity(conn, _opportunity())
+        storage.insert_paper_order(conn, _paper_order(status="rejected", count=0))
+
+        assert storage.get_filled_paper_order(conn, "opp-1") is None
+
+    def test_returns_none_for_an_opportunity_with_no_orders(self, tmp_path):
+        conn = storage.init_db(tmp_path / "t.sqlite")
+        storage.insert_sportsbook_event(conn, _event())
+        storage.insert_opportunity(conn, _opportunity())
+        assert storage.get_filled_paper_order(conn, "opp-1") is None
+
+    def test_picks_the_filled_order_among_a_mix(self, tmp_path):
+        conn = storage.init_db(tmp_path / "t.sqlite")
+        storage.insert_sportsbook_event(conn, _event())
+        storage.insert_opportunity(conn, _opportunity())
+        storage.insert_paper_order(conn, _paper_order(
+            order_id="po-rejected", status="rejected", count=0,
+            created_at=NOW - timedelta(seconds=5),
+        ))
+        filled = _paper_order(order_id="po-filled", status="filled", count=10)
+        storage.insert_paper_order(conn, filled)
+
+        assert storage.get_filled_paper_order(conn, "opp-1") == filled
+
+
+class TestListOpportunitiesPendingSettlement:
+    def _setup(self, conn, *, order_status="filled", evaluation=None):
+        storage.insert_sportsbook_event(conn, _event())
+        storage.insert_opportunity(conn, _opportunity())
+        storage.insert_paper_order(conn, _paper_order(status=order_status))
+        if evaluation is not None:
+            storage.insert_trade_evaluation(conn, evaluation)
+
+    def test_includes_a_filled_order_with_no_evaluation_yet(self, tmp_path):
+        conn = storage.init_db(tmp_path / "t.sqlite")
+        self._setup(conn)
+        assert storage.list_opportunities_pending_settlement(conn) == ["opp-1"]
+
+    def test_excludes_a_rejected_order(self, tmp_path):
+        conn = storage.init_db(tmp_path / "t.sqlite")
+        self._setup(conn, order_status="rejected")
+        assert storage.list_opportunities_pending_settlement(conn) == []
+
+    def test_excludes_an_already_settled_opportunity(self, tmp_path):
+        conn = storage.init_db(tmp_path / "t.sqlite")
+        settled = TradeEvaluation(
+            opportunity_id="opp-1", evaluated_at=NOW, entry_price_cents=43,
+            fair_prob_at_entry=0.65, fair_prob_at_close=None, clv_cents=None,
+            resolved_side="no", pnl_cents=57.0,
+        )
+        self._setup(conn, evaluation=settled)
+        assert storage.list_opportunities_pending_settlement(conn) == []
+
+    def test_includes_a_close_phase_only_row_with_no_resolved_side_yet(self, tmp_path):
+        """The trickiest case: a close-phase pass already wrote a row for
+        this opportunity (CLV fields populated) but hasn't settled yet
+        (`resolved_side` still NULL). The LEFT JOIN must still surface it as
+        pending, not treat "a row exists" as "already settled"."""
+        conn = storage.init_db(tmp_path / "t.sqlite")
+        close_phase_only = TradeEvaluation(
+            opportunity_id="opp-1", evaluated_at=NOW, entry_price_cents=43,
+            fair_prob_at_entry=0.65, fair_prob_at_close=0.30, clv_cents=13.0,
+            resolved_side=None, pnl_cents=None,
+        )
+        self._setup(conn, evaluation=close_phase_only)
+        assert storage.list_opportunities_pending_settlement(conn) == ["opp-1"]

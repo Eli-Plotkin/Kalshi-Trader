@@ -6,9 +6,17 @@ from datetime import datetime, timezone
 
 from . import mapper, scanner, storage
 from .config import DEFAULT_SCANNER_CONFIG, DEFAULT_SOURCE_WEIGHTS, ScannerConfig, SourceWeights
+from .evaluation import evaluate_opportunity
+from .kalshi_feed import resolved_yes_from_market
 from .paper import PaperPortfolio, paper_buy
 from .pricing import build_moneyline_fair_price
-from .schemas import KalshiMarketSnapshot, Opportunity, SportsbookEvent, SportsbookOdds
+from .schemas import (
+    KalshiMarketSnapshot,
+    Opportunity,
+    SportsbookEvent,
+    SportsbookOdds,
+    TradeEvaluation,
+)
 
 
 log = logging.getLogger("sportsbook_sourced.pipeline")
@@ -150,3 +158,60 @@ def run_scan(
             continue
 
     return opportunities
+
+
+def run_settlement_check(
+    *,
+    conn: sqlite3.Connection,
+    kalshi_client,
+    evaluated_at: datetime | None = None,
+) -> list[TradeEvaluation]:
+    """Check Kalshi settlement status for every filled paper order that
+    hasn't been scored yet, and write PnL for the ones that have resolved.
+
+    This is the settlement half of P1.7's two-phase evaluator, not the
+    whole thing: it only fills in `resolved_side`/`pnl_cents`. The other
+    half -- CLV (`fair_prob_at_close`) -- needs a fresh fair-price fetch
+    anchored to the event's `commence_time` (game start, the standard
+    "closing line" instant), not Kalshi's `close_time` (the settlement
+    deadline, hours later, by which point the outcome is already known and
+    "fair probability" is degenerate). That timing model doesn't exist yet
+    and isn't built here -- see CLAUDE.md P1.7.
+
+    Per-opportunity error isolation, same as `run_scan`: one bad
+    `kalshi_client.get_market` call shouldn't stop the rest from being
+    checked.
+    """
+    evaluated_at = evaluated_at or datetime.now(timezone.utc)
+    results: list[TradeEvaluation] = []
+
+    for opportunity_id in storage.list_opportunities_pending_settlement(conn):
+        try:
+            opportunity = storage.get_opportunity(conn, opportunity_id)
+            order = storage.get_filled_paper_order(conn, opportunity_id)
+            if opportunity is None or order is None:
+                continue
+
+            market = kalshi_client.get_market(opportunity.kalshi_ticker)
+            if market is None:
+                continue
+
+            resolved_yes = resolved_yes_from_market(market)
+            if resolved_yes is None:
+                log.info("market %s not settled yet", opportunity.kalshi_ticker)
+                continue
+
+            result = evaluate_opportunity(
+                opportunity=opportunity,
+                fair_prob_at_close=None,
+                resolved_yes=resolved_yes,
+                count=order.count,
+                evaluated_at=evaluated_at,
+            )
+            storage.insert_trade_evaluation(conn, result)
+            results.append(result)
+        except Exception:
+            log.exception("settlement check failed for opportunity %s", opportunity_id)
+            continue
+
+    return results

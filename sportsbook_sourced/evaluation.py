@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
+from .pricing import exact_kalshi_fee_cents
 from .schemas import Opportunity, TradeEvaluation
 
 
@@ -60,6 +61,12 @@ def evaluate_opportunity(
         count=count,
         resolved_yes=resolved_yes,
     )
+    if pnl is not None:
+        # Kalshi charges its fee on entry only, once, regardless of
+        # settlement outcome -- `realized_pnl_cents` stays fee-agnostic
+        # (gross), so the deduction happens here, at settlement time, not
+        # duplicated into every caller of the pure PnL function.
+        pnl -= exact_kalshi_fee_cents(count, opportunity.kalshi_price_cents)
     resolved_side = None
     if resolved_yes is not None:
         resolved_side = "yes" if resolved_yes else "no"

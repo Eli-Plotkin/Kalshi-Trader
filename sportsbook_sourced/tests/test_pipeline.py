@@ -310,3 +310,126 @@ class TestRunScan:
         # MISPRICED_QUOTES implies the home side (Lakers) is a heavy underdog.
         assert home_prob < 0.5
         assert result[0].side == "no"
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# run_settlement_check
+# ────────────────────────────────────────────────────────────────────────────
+
+
+class FakeKalshiClient:
+    """Maps ticker -> a canned `get_market` payload (or an exception to
+    raise, to exercise per-opportunity error isolation)."""
+
+    def __init__(self, responses):
+        self._responses = responses
+        self.tickers_checked = []
+
+    def get_market(self, ticker):
+        self.tickers_checked.append(ticker)
+        response = self._responses.get(ticker)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+class TestRunSettlementCheck:
+    def _scan_one_opportunity(self, conn, *, quotes=MISPRICED_QUOTES):
+        """Run a real scan so a genuine, filled opportunity exists to settle
+        -- settlement should operate on real scan output, not a hand-built
+        fixture that could drift from what run_scan actually persists."""
+        event = _event("4b1c2d3e", "Los Angeles Lakers", "Boston Celtics")
+        market = _market(ticker="KXNBAGAME-26JAN14LALBOS-LAL", yes_sub_title="Lakers")
+        odds = _odds(event, quotes)
+        portfolio = PaperPortfolio(cash_cents=100_000, positions={})
+        opportunities = pipeline.run_scan(
+            markets=[market], events=[event], odds=odds, portfolio=portfolio,
+            conn=conn, weights=DEFAULT_SOURCE_WEIGHTS, config=CONFIG, now=NOW,
+        )
+        return opportunities[0]
+
+    def test_scores_a_resolved_no_win_and_persists_it(self, tmp_path):
+        conn = storage.init_db(tmp_path / "t.sqlite")
+        opp = self._scan_one_opportunity(conn)
+        assert opp.side == "no", "fixture assumption: MISPRICED_QUOTES picks the NO side"
+        client = FakeKalshiClient({opp.kalshi_ticker: {"result": "no"}})
+
+        results = pipeline.run_settlement_check(conn=conn, kalshi_client=client, evaluated_at=NOW)
+
+        assert len(results) == 1
+        assert results[0].resolved_side == "no"
+        assert results[0].pnl_cents > 0, "NO side, resolved no -> a win"
+        row = conn.execute(
+            "SELECT resolved_side, pnl_cents FROM trade_evaluations WHERE opportunity_id = ?",
+            (opp.opportunity_id,),
+        ).fetchone()
+        assert row == (results[0].resolved_side, results[0].pnl_cents)
+
+    def test_does_not_reprocess_an_already_settled_opportunity(self, tmp_path):
+        conn = storage.init_db(tmp_path / "t.sqlite")
+        opp = self._scan_one_opportunity(conn)
+        client = FakeKalshiClient({opp.kalshi_ticker: {"result": "no"}})
+
+        first = pipeline.run_settlement_check(conn=conn, kalshi_client=client, evaluated_at=NOW)
+        second = pipeline.run_settlement_check(conn=conn, kalshi_client=client, evaluated_at=NOW)
+
+        assert len(first) == 1
+        assert len(second) == 0
+        assert client.tickers_checked == [opp.kalshi_ticker], (
+            "a settled opportunity must not be checked again on the next pass"
+        )
+
+    def test_skips_a_market_that_has_not_settled_yet(self, tmp_path):
+        conn = storage.init_db(tmp_path / "t.sqlite")
+        opp = self._scan_one_opportunity(conn)
+        client = FakeKalshiClient({opp.kalshi_ticker: {"result": ""}})
+
+        results = pipeline.run_settlement_check(conn=conn, kalshi_client=client, evaluated_at=NOW)
+
+        assert results == []
+        assert self._table_count(conn, "trade_evaluations") == 0
+        assert storage.list_opportunities_pending_settlement(conn) == [opp.opportunity_id], (
+            "still-open markets must remain pending for the next check"
+        )
+
+    def test_one_failing_lookup_does_not_stop_the_rest(self, tmp_path):
+        conn = storage.init_db(tmp_path / "t.sqlite")
+        good_opp = self._scan_one_opportunity(conn)
+
+        broken_event = _event("broken-1", "Golden State Warriors", "Phoenix Suns")
+        broken_market = _market(ticker="KXNBAGAME-26JAN14GSWPHX-GSW", yes_sub_title="Warriors")
+        broken_odds = _odds(broken_event, MISPRICED_QUOTES)
+        portfolio = PaperPortfolio(cash_cents=100_000, positions={})
+        broken_opps = pipeline.run_scan(
+            markets=[broken_market], events=[broken_event], odds=broken_odds,
+            portfolio=portfolio, conn=conn, weights=DEFAULT_SOURCE_WEIGHTS,
+            config=CONFIG, now=NOW,
+        )
+        broken_opp = broken_opps[0]
+
+        client = FakeKalshiClient({
+            good_opp.kalshi_ticker: {"result": "no"},
+            broken_opp.kalshi_ticker: RuntimeError("Kalshi API is down"),
+        })
+
+        results = pipeline.run_settlement_check(conn=conn, kalshi_client=client, evaluated_at=NOW)
+
+        assert len(results) == 1
+        assert results[0].opportunity_id == good_opp.opportunity_id
+        assert storage.list_opportunities_pending_settlement(conn) == [broken_opp.opportunity_id]
+
+    def test_a_skip_only_opportunity_is_never_checked(self, tmp_path):
+        """No filled order exists for a skip -- it must not even reach
+        kalshi_client.get_market, let alone be scored."""
+        conn = storage.init_db(tmp_path / "t.sqlite")
+        opp = self._scan_one_opportunity(conn, quotes=FAIR_QUOTES)
+        assert opp.action == "skip", "fixture assumption: FAIR_QUOTES produces a skip"
+        client = FakeKalshiClient({opp.kalshi_ticker: {"result": "no"}})
+
+        results = pipeline.run_settlement_check(conn=conn, kalshi_client=client, evaluated_at=NOW)
+
+        assert results == []
+        assert client.tickers_checked == []
+
+    def _table_count(self, conn, table):
+        return conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
