@@ -160,7 +160,11 @@ class TheOddsApiProvider(OddsProvider):
         sport = self.SPORT_KEYS[league]
         payload = self._get(
             f"/sports/{sport}/odds",
-            regions="us",
+            # Pinnacle and Circa -- the sharp anchors SourceWeights upweights
+            # 3.0x/2.5x -- aren't offered in the "us" region; "eu" carries
+            # them. Watch quota cost: each additional region multiplies the
+            # per-request cost on The Odds API's metered plans.
+            regions="us,eu",
             markets="h2h",
             oddsFormat="american",
             dateFormat="iso",
