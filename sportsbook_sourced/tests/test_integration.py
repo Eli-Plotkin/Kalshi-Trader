@@ -27,7 +27,7 @@ import pytest
 
 from sportsbook_sourced import evaluation, mapper, paper, pricing, scanner, storage
 from sportsbook_sourced.config import DEFAULT_SOURCE_WEIGHTS, ScannerConfig
-from sportsbook_sourced.kalshi_feed import snapshot_from_market
+from sportsbook_sourced.kalshi_feed import snapshot_from_market, top_of_book
 from sportsbook_sourced.odds import TheOddsApiProvider
 from sportsbook_sourced.schemas import (
     EventMapping,
@@ -361,13 +361,20 @@ class TestScanOnRealPayloads:
         assert "net_edge" in opp.reason
 
     def test_edge_math_is_correct_for_the_chosen_side(self):
+        market = kalshi_market()
         fair, _, opp = run_pipeline(
-            market=kalshi_market(), event=odds_api_event(),
+            market=market, event=odds_api_event(),
             quotes=MISPRICED_QUOTES,
         )
         expected_fee = pricing.kalshi_fee_cents_per_contract(
             opp.kalshi_price_cents)
-        buffers = (CONFIG.liquidity_buffer_cents
+        # Liquidity buffer is size-derived (P2.9), not the flat config
+        # default -- compute it the same way scan_opportunity does, from
+        # the actual top-of-book depth on the side that was chosen.
+        book = top_of_book(market.raw_orderbook, opp.side)
+        liquidity_buffer = scanner._liquidity_buffer_cents(
+            book[1] if book is not None else None, CONFIG)
+        buffers = (liquidity_buffer
                    + CONFIG.stale_odds_buffer_cents
                    + CONFIG.mapping_risk_buffer_cents)
         assert opp.net_edge_cents == pytest.approx(

@@ -54,6 +54,17 @@ class ScannerConfig:
     stale_odds_buffer_cents: float = 1.0
     mapping_risk_buffer_cents: float = 1.0
 
+    # Liquidity buffer scaling (P2.9): `liquidity_buffer_cents` above is now
+    # the buffer at `liquidity_reference_size` depth, not a flat value --
+    # scanner.py scales it by `reference_size / actual_top_of_book_size`,
+    # capped at `liquidity_buffer_cap_cents`. Neither number is calibrated
+    # against real observed depth yet (no data on typical Kalshi NBA
+    # moneyline book depth has been gathered) -- treat these as a
+    # placeholder shape, not a tuned threshold, same caveat as
+    # `mapper.MIN_TEAM_SIMILARITY` before it was investigated.
+    liquidity_reference_size: int = 100
+    liquidity_buffer_cap_cents: float = 50.0
+
 
 DEFAULT_SOURCE_WEIGHTS = SourceWeights()
 DEFAULT_SCANNER_CONFIG = ScannerConfig()

@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from .config import ScannerConfig
+from .kalshi_feed import top_of_book
 from .mapper import fair_yes_probability
 from .pricing import kalshi_fee_cents_per_contract
 from .schemas import EventMapping, FairPrice, KalshiMarketSnapshot, Opportunity
@@ -13,6 +14,33 @@ def _max_contracts_for_budget(price_cents: int, max_position_usd: float) -> int:
     if price_cents <= 0:
         return 0
     return int((max_position_usd * 100) // price_cents)
+
+
+def _liquidity_buffer_cents(size: int | None, config: ScannerConfig) -> float:
+    """Scale the liquidity buffer by top-of-book depth (P2.9).
+
+    A thin book means filling `max_contracts` would walk through worse price
+    levels than the single quoted price `gross_edge_cents` was computed
+    from, so the realized edge is likely worse than modeled -- the buffer
+    should be bigger. A deep book can likely fill near the quoted price, so
+    it can be smaller than the old flat default.
+
+    `size=None` means the orderbook wasn't available or didn't parse --
+    falls back to the flat `liquidity_buffer_cents` rather than assuming
+    zero liquidity, since a single fetch hiccup shouldn't silently zero out
+    every opportunity that scan cycle just because its book wasn't fetched.
+    An empty book (`size=0`, fetched but genuinely nothing resting) is
+    different from that and gets the max caution (the cap), since it means
+    there is nothing to fill at all.
+    """
+    if size is None:
+        return config.liquidity_buffer_cents
+    if size <= 0:
+        return config.liquidity_buffer_cap_cents
+    return min(
+        config.liquidity_buffer_cents * config.liquidity_reference_size / size,
+        config.liquidity_buffer_cap_cents,
+    )
 
 
 def scan_opportunity(
@@ -63,13 +91,19 @@ def scan_opportunity(
             gross_edge = no_gross
 
         fee = kalshi_fee_cents_per_contract(price)
+        book = top_of_book(market.raw_orderbook, side)
+        book_size = book[1] if book is not None else None
         buffers = (
-            config.liquidity_buffer_cents
+            _liquidity_buffer_cents(book_size, config)
             + config.stale_odds_buffer_cents
             + config.mapping_risk_buffer_cents
         )
         net_edge = gross_edge - fee - buffers
         max_contracts = _max_contracts_for_budget(price, config.max_position_usd)
+        if book_size is not None:
+            # Never claim you can fill more than what's actually resting at
+            # the top of book, regardless of budget.
+            max_contracts = min(max_contracts, book_size)
 
     reasons: list[str] = []
     if mapping.confidence < config.min_mapping_confidence:

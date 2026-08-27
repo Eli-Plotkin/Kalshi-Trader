@@ -11,6 +11,7 @@ from sportsbook_sourced.kalshi_feed import (
     list_sports_markets,
     resolved_yes_from_market,
     snapshot_from_market,
+    top_of_book,
 )
 from sportsbook_sourced.schemas import KalshiMarketSnapshot
 
@@ -154,6 +155,57 @@ class TestSnapshotFromMarket:
         market.pop("title")
         snap = snapshot_from_market(market=market)
         assert snap.title == ""
+
+
+# ----------------------------------------------------------------------------
+# top_of_book — best resting (price, size) per side (P2.9)
+# ----------------------------------------------------------------------------
+
+
+class TestTopOfBook:
+    def test_best_bid_is_the_last_level_not_the_first(self):
+        """Levels are sorted ascending by price; the best (highest) bid is
+        at the end -- the same indexing nba_trading/strategy.py's
+        `get_implied_ask` uses (`no_bids[-1][0]`) for this same API."""
+        orderbook = {"no_dollars": [["0.42", "400"], ["0.43", "250"]]}
+        assert top_of_book(orderbook, "no") == (43, 250)
+
+    def test_yes_and_no_are_independent_sides(self):
+        orderbook = {
+            "yes_dollars": [["0.54", "300"], ["0.55", "500"]],
+            "no_dollars": [["0.42", "400"], ["0.43", "250"]],
+        }
+        assert top_of_book(orderbook, "yes") == (55, 500)
+        assert top_of_book(orderbook, "no") == (43, 250)
+
+    def test_single_level_book(self):
+        assert top_of_book({"yes_dollars": [["0.55", "1"]]}, "yes") == (55, 1)
+
+    def test_missing_side_key_returns_none(self):
+        assert top_of_book({"yes_dollars": [["0.55", "1"]]}, "no") is None
+
+    def test_empty_orderbook_returns_none(self):
+        assert top_of_book({}, "yes") is None
+
+    def test_none_orderbook_returns_none(self):
+        assert top_of_book(None, "yes") is None
+
+    def test_a_fetched_but_empty_side_is_zero_depth_not_unknown(self):
+        """A missing key ("we don't know") and an empty list ("we checked,
+        there's nothing") must not collapse to the same signal -- the
+        latter is more conservative, not equally unknown."""
+        assert top_of_book({"yes_dollars": []}, "yes") == (0, 0)
+        assert top_of_book({"yes_dollars": []}, "yes") is not None
+
+    def test_malformed_price_returns_none(self):
+        assert top_of_book({"yes_dollars": [["not-a-price", "10"]]}, "yes") is None
+
+    def test_malformed_size_returns_none(self):
+        assert top_of_book({"yes_dollars": [["0.55", "not-a-size"]]}, "yes") is None
+
+    def test_malformed_level_shape_returns_none(self):
+        # A level missing its size entirely (unpacking would raise).
+        assert top_of_book({"yes_dollars": [["0.55"]]}, "yes") is None
 
 
 # ----------------------------------------------------------------------------

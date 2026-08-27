@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from .config import MONEYLINE_SERIES_TICKERS
-from .schemas import KalshiMarketSnapshot, League
+from .schemas import KalshiMarketSnapshot, League, Side
 
 
 def dollars_str_to_cents(value) -> int:
@@ -51,6 +51,38 @@ def snapshot_from_market(
         raw_market=market,
         raw_orderbook=orderbook or {},
     )
+
+
+def top_of_book(orderbook: dict, side: Side) -> tuple[int, int] | None:
+    """Best resting (price_cents, size) for one side of a Kalshi orderbook.
+
+    `orderbook["yes_dollars"]`/`["no_dollars"]` are lists of `[price_str,
+    size_str]` levels sorted ascending by price, with the best (highest) bid
+    at the end -- the same convention `nba_trading/strategy.py`'s
+    `get_implied_ask` already relies on (`no_bids[-1][0]`) for this same
+    API, not a shape invented for this package.
+
+    Two different "nothing here" cases are deliberately NOT collapsed into
+    one:
+    - The side's key is missing entirely, or malformed -- "unknown depth"
+      (no orderbook was fetched, or it doesn't parse). Returns `None`.
+    - The key is present but the level list is empty -- "zero depth" (the
+      book was fetched and genuinely has no resting orders on this side).
+      Returns `(0, 0)`, not `None` -- a market with confirmed zero
+      liquidity is a *more* conservative situation than one that just
+      wasn't measured, and callers (`scanner._liquidity_buffer_cents`)
+      must be able to tell them apart.
+    """
+    if not orderbook or f"{side}_dollars" not in orderbook:
+        return None
+    levels = orderbook[f"{side}_dollars"]
+    if not levels:
+        return (0, 0)
+    try:
+        price_str, size_str = levels[-1]
+        return round(float(price_str) * 100), int(float(size_str))
+    except (TypeError, ValueError, IndexError):
+        return None
 
 
 def resolved_yes_from_market(market: dict) -> bool | None:
