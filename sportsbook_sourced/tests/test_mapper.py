@@ -503,7 +503,6 @@ def _fair_price(home_prob: float = 0.6) -> FairPrice:
         sharp_source_count=1,
         staleness_seconds=10,
         book_disagreement_cents=1.0,
-        confidence=0.95,
         computed_at=datetime(2026, 5, 20, 0, 0, tzinfo=timezone.utc),
     )
 

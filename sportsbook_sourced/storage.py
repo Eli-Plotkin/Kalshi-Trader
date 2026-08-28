@@ -60,7 +60,6 @@ CREATE TABLE IF NOT EXISTS fair_price_snapshots (
   sharp_source_count INTEGER NOT NULL,
   staleness_seconds INTEGER NOT NULL,
   book_disagreement_cents REAL NOT NULL,
-  confidence REAL NOT NULL,
   computed_at TEXT NOT NULL,
   FOREIGN KEY (event_id) REFERENCES sportsbook_events(event_id)
 );
@@ -229,8 +228,8 @@ def insert_fair_price(conn: sqlite3.Connection, fair_price: FairPrice) -> None:
             INSERT INTO fair_price_snapshots
                 (event_id, league, market_type, home_team, away_team, home_prob,
                  away_prob, source_count, sharp_source_count, staleness_seconds,
-                 book_disagreement_cents, confidence, computed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 book_disagreement_cents, computed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 fair_price.event_id,
@@ -244,7 +243,6 @@ def insert_fair_price(conn: sqlite3.Connection, fair_price: FairPrice) -> None:
                 fair_price.sharp_source_count,
                 fair_price.staleness_seconds,
                 fair_price.book_disagreement_cents,
-                fair_price.confidence,
                 fair_price.computed_at.isoformat(),
             ),
         )

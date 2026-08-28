@@ -292,7 +292,7 @@ def test_fair_price_filters_other_event_ids():
     assert fair.source_count == 1
 
 
-def test_fair_price_confidence_drops_with_disagreement():
+def test_fair_price_book_disagreement_reflects_a_genuine_split():
     now = datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc)
     event = _event()
     # Two books with very different views
@@ -309,6 +309,4 @@ def test_fair_price_confidence_drops_with_disagreement():
         max_staleness_seconds=300,
         now=now,
     )
-    # Confidence is 1 - disagreement/20, big disagreement => lower confidence
-    assert fair.confidence < 0.5
     assert fair.book_disagreement_cents > 10

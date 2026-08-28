@@ -46,7 +46,6 @@ class FairPrice:
     sharp_source_count: int
     staleness_seconds: int
     book_disagreement_cents: float
-    confidence: float
     computed_at: datetime
 
 

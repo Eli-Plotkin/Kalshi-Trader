@@ -47,7 +47,6 @@ def _fair(*, home_prob: float = 0.6, sharp: int = 2, source: int = 3,
         sharp_source_count=sharp,
         staleness_seconds=stale,
         book_disagreement_cents=disagreement,
-        confidence=0.95,
         computed_at=NOW,
     )
 
@@ -185,18 +184,6 @@ def test_scanner_skips_on_low_sharp_source_count():
     assert "sharp_source_count" in opp.reason
 
 
-def test_scanner_skips_on_stale_odds():
-    opp = scan_opportunity(
-        market=_market(),
-        fair_price=_fair(home_prob=0.6, stale=600),
-        mapping=_mapping(),
-        config=_config(),
-        computed_at=NOW,
-    )
-    assert opp.action == "skip"
-    assert "odds_stale" in opp.reason
-
-
 def test_scanner_skips_on_book_disagreement():
     opp = scan_opportunity(
         market=_market(),
@@ -226,7 +213,7 @@ def test_scanner_skips_on_insufficient_net_edge():
 def test_scanner_aggregates_multiple_skip_reasons():
     opp = scan_opportunity(
         market=_market(),
-        fair_price=_fair(home_prob=0.6, source=1, sharp=0, stale=600),
+        fair_price=_fair(home_prob=0.6, source=1, sharp=0),
         mapping=_mapping(confidence=0.5),
         config=_config(),
         computed_at=NOW,

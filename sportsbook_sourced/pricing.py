@@ -101,7 +101,6 @@ def build_moneyline_fair_price(
     disagreement = pstdev([prob for prob, _, _, _ in home_values]) * 100.0 if len(home_values) > 1 else 0.0
     staleness_seconds = max(staleness for _, _, _, staleness in home_values)
     sharp_count = sum(1 for _, _, is_sharp, _ in home_values if is_sharp)
-    confidence = max(0.0, min(1.0, 1.0 - (disagreement / 20.0)))
 
     return FairPrice(
         event_id=event.event_id,
@@ -115,7 +114,6 @@ def build_moneyline_fair_price(
         sharp_source_count=sharp_count,
         staleness_seconds=staleness_seconds,
         book_disagreement_cents=disagreement,
-        confidence=confidence,
         computed_at=now,
     )
 

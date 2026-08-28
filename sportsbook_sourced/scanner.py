@@ -113,8 +113,6 @@ def scan_opportunity(
         reasons.append(f"source_count:{fair_price.source_count}<{config.min_source_count}")
     if fair_price.sharp_source_count < config.min_sharp_source_count:
         reasons.append(f"sharp_source_count:{fair_price.sharp_source_count}<{config.min_sharp_source_count}")
-    if fair_price.staleness_seconds > config.max_odds_staleness_seconds:
-        reasons.append(f"odds_stale:{fair_price.staleness_seconds}s")
     if fair_price.book_disagreement_cents > config.max_book_disagreement_cents:
         reasons.append(f"book_disagreement:{fair_price.book_disagreement_cents:.1f}c")
     if mapping.mapped_yes_outcome is not None and net_edge < config.min_net_edge_cents:
