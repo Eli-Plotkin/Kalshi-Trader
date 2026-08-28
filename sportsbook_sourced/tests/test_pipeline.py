@@ -184,6 +184,65 @@ class TestRunScan:
             "SELECT 1 FROM event_mappings WHERE kalshi_ticker = ?", (broken_market.ticker,)
         ).fetchone() is None
 
+    def test_one_stale_book_is_dropped_but_the_scan_still_succeeds(self, tmp_path):
+        """A distinct case from the fully-stale one above: here the event has
+        BOTH a fresh and a stale book. `build_moneyline_fair_price` doesn't
+        even raise in this case (see P2.12) -- it drops the stale book
+        per-bookmaker and computes a real fair price from the survivor(s).
+        This locks that down end-to-end through run_scan, not just at
+        pricing.py's unit level: no exception, no skipped market, and the
+        stale book's (contradictory) odds must not have leaked into the
+        computed fair price.
+        """
+        event = _event("4b1c2d3e", "Los Angeles Lakers", "Boston Celtics")
+        market = _market(ticker="KXNBAGAME-26JAN14LALBOS-LAL", yes_sub_title="Lakers")
+
+        fresh_home, fresh_away = MISPRICED_QUOTES["draftkings"]
+        stale_home, stale_away = FAIR_QUOTES["fanduel"]  # contradictory if it leaked in
+        odds = [
+            SportsbookOdds(
+                event_id=event.event_id, bookmaker="draftkings", market_type="moneyline",
+                outcome_name=event.home_team, american_odds=fresh_home,
+                last_update=NOW - timedelta(seconds=30), collected_at=NOW,
+            ),
+            SportsbookOdds(
+                event_id=event.event_id, bookmaker="draftkings", market_type="moneyline",
+                outcome_name=event.away_team, american_odds=fresh_away,
+                last_update=NOW - timedelta(seconds=30), collected_at=NOW,
+            ),
+            SportsbookOdds(
+                event_id=event.event_id, bookmaker="fanduel", market_type="moneyline",
+                outcome_name=event.home_team, american_odds=stale_home,
+                last_update=NOW - timedelta(seconds=600), collected_at=NOW,
+            ),
+            SportsbookOdds(
+                event_id=event.event_id, bookmaker="fanduel", market_type="moneyline",
+                outcome_name=event.away_team, american_odds=stale_away,
+                last_update=NOW - timedelta(seconds=600), collected_at=NOW,
+            ),
+        ]
+        assert CONFIG.max_odds_staleness_seconds < 600  # fixture sanity: fanduel really is stale
+
+        conn = storage.init_db(tmp_path / "t.sqlite")
+        portfolio = PaperPortfolio(cash_cents=100_000, positions={})
+
+        result = pipeline.run_scan(
+            markets=[market], events=[event], odds=odds, portfolio=portfolio,
+            conn=conn, weights=DEFAULT_SOURCE_WEIGHTS, config=CONFIG, now=NOW,
+        )
+
+        assert len(result) == 1, "the stale book must not cause the market to be skipped"
+        source_count, home_prob = conn.execute(
+            "SELECT source_count, home_prob FROM fair_price_snapshots WHERE event_id = ?",
+            (event.event_id,),
+        ).fetchone()
+        assert source_count == 1, "only the fresh book should have contributed"
+        # If fanduel's stale (efficiently-priced) odds had leaked in, home_prob
+        # would sit near 0.5; draftkings alone implies the Lakers are a heavy
+        # underdog (~0.34), matching the same MISPRICED_QUOTES fixture used
+        # throughout this file.
+        assert home_prob < 0.4
+
     def test_a_skip_opportunity_still_gets_a_paper_order_recorded(self, tmp_path):
         """CLAUDE.md claims the audit trail covers scans that didn't trade,
         not just fills — `paper_buy` already no-ops non-'buy' actions to a
