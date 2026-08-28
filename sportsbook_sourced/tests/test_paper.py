@@ -4,7 +4,13 @@ from datetime import datetime, timezone
 
 import pytest
 
-from sportsbook_sourced.paper import KELLY_FRACTION_MULTIPLIER, PaperPortfolio, kelly_fraction, paper_buy
+from sportsbook_sourced.paper import (
+    KELLY_FRACTION_MULTIPLIER,
+    PaperPortfolio,
+    Position,
+    kelly_fraction,
+    paper_buy,
+)
 from sportsbook_sourced.schemas import Opportunity
 
 
@@ -74,17 +80,19 @@ def test_paper_buy_fills_when_cash_sufficient():
     assert order.limit_price_cents == 42
     # Cash drawn down by 10 * 42 = 420
     assert portfolio.cash_cents == 10_000 - 420
-    # Long YES → positive position
-    assert portfolio.positions["KXNBAGAME-LAL"] == 10
+    position = portfolio.positions["KXNBAGAME-LAL"]
+    assert position.yes_count == 10
+    assert position.no_count == 0
 
 
-def test_paper_buy_no_side_records_negative_position():
+def test_paper_buy_no_side_records_a_no_count_not_a_negative_yes_count():
     portfolio = PaperPortfolio(cash_cents=10_000, positions={})
     opp = _opp(side="no", price=58, max_contracts=10)
     order = paper_buy(opp, portfolio=portfolio)
     assert order.status == "filled"
-    # NO side is signed negative in the position map
-    assert portfolio.positions["KXNBAGAME-LAL"] == -10
+    position = portfolio.positions["KXNBAGAME-LAL"]
+    assert position.no_count == 10
+    assert position.yes_count == 0
     assert portfolio.cash_cents == 10_000 - 580
 
 
@@ -116,10 +124,26 @@ def test_paper_buy_rejects_when_cash_insufficient():
 
 
 def test_paper_buy_accumulates_position():
-    portfolio = PaperPortfolio(cash_cents=10_000, positions={"KXNBAGAME-LAL": 5})
+    portfolio = PaperPortfolio(
+        cash_cents=10_000, positions={"KXNBAGAME-LAL": Position(yes_count=5)},
+    )
     opp = _opp(side="yes", price=42, max_contracts=3)
     paper_buy(opp, portfolio=portfolio)
-    assert portfolio.positions["KXNBAGAME-LAL"] == 8
+    assert portfolio.positions["KXNBAGAME-LAL"].yes_count == 8
+
+
+def test_paper_buy_tracks_yes_and_no_on_the_same_ticker_independently():
+    """The exact ambiguity P3.14 raised: 5 YES then 3 NO on one ticker must
+    not collapse into a signed net of 2 -- the true exposure (500 payout if
+    YES wins, 300 if NO wins) is completely different from what "2 YES
+    contracts" would imply."""
+    portfolio = PaperPortfolio(cash_cents=10_000, positions={})
+    paper_buy(_opp(side="yes", price=42, max_contracts=5), portfolio=portfolio)
+    paper_buy(_opp(side="no", price=42, max_contracts=3), portfolio=portfolio)
+
+    position = portfolio.positions["KXNBAGAME-LAL"]
+    assert position.yes_count == 5
+    assert position.no_count == 3
 
 
 def test_paper_buy_records_fill_model_version():

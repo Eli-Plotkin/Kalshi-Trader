@@ -445,7 +445,9 @@ class TestPaperAndEvaluation:
         order = paper.paper_buy(opp, portfolio=portfolio)
         assert order.status == "filled"
         assert portfolio.cash_cents == 100_000 - order.count * opp.kalshi_price_cents
-        assert portfolio.positions[opp.kalshi_ticker] != 0
+        position = portfolio.positions[opp.kalshi_ticker]
+        assert position.no_count == order.count, "fixture is a NO-side opportunity"
+        assert position.yes_count == 0
 
     def test_paper_rejects_when_cash_is_short(self):
         opp = self._tradeable()

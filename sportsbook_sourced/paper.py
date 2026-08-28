@@ -19,9 +19,25 @@ KELLY_FRACTION_MULTIPLIER = 0.25
 
 
 @dataclass
+class Position:
+    """YES and NO contracts held on one ticker, tracked separately.
+
+    A single signed int (positive for YES, negative for NO) can't tell
+    "5 NO contracts" apart from "5 YES contracts short" -- and worse, if a
+    ticker ever accumulates fills on both sides (5 YES then 3 NO), a signed
+    net of 2 is indistinguishable from "2 YES contracts," even though the
+    real exposure (and settlement payout) is completely different: 5 YES +
+    3 NO pays 500 if YES wins or 300 if NO wins, not the 200-or-nothing a
+    bare "2" would imply (P3.14).
+    """
+    yes_count: int = 0
+    no_count: int = 0
+
+
+@dataclass
 class PaperPortfolio:
     cash_cents: int
-    positions: dict[str, int]
+    positions: dict[str, Position]
 
 
 def kelly_fraction(*, net_edge_cents: float, price_cents: int) -> float:
@@ -74,10 +90,11 @@ def paper_buy(opportunity: Opportunity, *, portfolio: PaperPortfolio) -> PaperOr
     else:
         status = "filled"
         portfolio.cash_cents -= cost
-        signed = count if opportunity.side == "yes" else -count
-        portfolio.positions[opportunity.kalshi_ticker] = (
-            portfolio.positions.get(opportunity.kalshi_ticker, 0) + signed
-        )
+        position = portfolio.positions.setdefault(opportunity.kalshi_ticker, Position())
+        if opportunity.side == "yes":
+            position.yes_count += count
+        else:
+            position.no_count += count
 
     return PaperOrder(
         paper_order_id=str(uuid4()),
