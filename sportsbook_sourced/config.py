@@ -49,7 +49,15 @@ class ScannerConfig:
     max_book_disagreement_cents: float = 8.0
     min_source_count: int = 2
     min_sharp_source_count: int = 0
-    max_position_usd: float = 10.0
+    # 5% of the $1,000 starting paper bankroll (cli.py::STARTING_PAPER_CASH_CENTS)
+    # -- a per-position budget cap, not a trading threshold, so this doesn't
+    # carry the same "don't guess ahead of data" caveat as min_net_edge_cents
+    # or the liquidity/mapping thresholds. Raising it from the original $10
+    # is also what makes P3.13's Kelly-proportional sizing load-bearing by
+    # default rather than perpetually inert behind a tighter budget ceiling
+    # (see P3.13's finding: at $10, even the minimum viable edge produced a
+    # Kelly count larger than the ceiling allowed).
+    max_position_usd: float = 50.0
     liquidity_buffer_cents: float = 1.0
     stale_odds_buffer_cents: float = 1.0
 
