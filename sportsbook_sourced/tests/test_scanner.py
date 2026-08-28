@@ -78,7 +78,6 @@ def _config(**overrides) -> ScannerConfig:
         max_position_usd=10.0,
         liquidity_buffer_cents=1.0,
         stale_odds_buffer_cents=1.0,
-        mapping_risk_buffer_cents=1.0,
     )
     base.update(overrides)
     return ScannerConfig(**base)
@@ -285,11 +284,14 @@ def test_scanner_net_edge_subtracts_fee_and_buffers():
     )
     # gross = 60-42 = 18
     # fee at 42c = 0.07 * 42 * 58 = 170.52/100 = 1.7052c
-    # buffers = 3c
-    # net = 18 - 1.7052 - 3 ≈ 13.29c
+    # buffers = 2c (liquidity + stale; mapping_risk_buffer_cents was removed,
+    # see CLAUDE.md P2.10 -- a flat few-cent haircut can't hedge the
+    # catastrophic case of a genuinely wrong mapping, and the hard
+    # min_mapping_confidence gate is the real defense against that)
+    # net = 18 - 1.7052 - 2 ≈ 14.29c
     assert opp.gross_edge_cents == 18.0
     assert opp.fee_cents_per_contract == pytest.approx(0.07 * 42 * 58 / 100.0)
-    assert opp.net_edge_cents == pytest.approx(18.0 - opp.fee_cents_per_contract - 3.0)
+    assert opp.net_edge_cents == pytest.approx(18.0 - opp.fee_cents_per_contract - 2.0)
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -305,7 +307,7 @@ def test_liquidity_buffer_falls_back_to_flat_when_orderbook_is_unfetched():
         market=market, fair_price=_fair(home_prob=0.6), mapping=_mapping(),
         config=_config(), computed_at=NOW,
     )
-    assert opp.net_edge_cents == pytest.approx(18.0 - opp.fee_cents_per_contract - 3.0)
+    assert opp.net_edge_cents == pytest.approx(18.0 - opp.fee_cents_per_contract - 2.0)
 
 
 def test_liquidity_buffer_shrinks_for_a_deep_book():
@@ -320,7 +322,7 @@ def test_liquidity_buffer_shrinks_for_a_deep_book():
     expected_buffer = min(1.0 * 100 / 500, 50.0)
     assert expected_buffer < 1.0
     assert opp.net_edge_cents == pytest.approx(
-        18.0 - opp.fee_cents_per_contract - expected_buffer - 2.0)  # +stale +mapping
+        18.0 - opp.fee_cents_per_contract - expected_buffer - 1.0)  # +stale
 
 
 def test_liquidity_buffer_grows_for_a_thin_book_up_to_the_cap():
@@ -332,7 +334,7 @@ def test_liquidity_buffer_grows_for_a_thin_book_up_to_the_cap():
     )
     # 1.0 * 100 / 1 = 100, capped at liquidity_buffer_cap_cents (50.0).
     assert opp.net_edge_cents == pytest.approx(
-        18.0 - opp.fee_cents_per_contract - 50.0 - 2.0)
+        18.0 - opp.fee_cents_per_contract - 50.0 - 1.0)  # +stale
 
 
 def test_a_confirmed_empty_book_gets_the_maximum_buffer_and_zero_contracts():

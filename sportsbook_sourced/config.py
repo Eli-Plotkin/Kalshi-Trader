@@ -52,7 +52,6 @@ class ScannerConfig:
     max_position_usd: float = 10.0
     liquidity_buffer_cents: float = 1.0
     stale_odds_buffer_cents: float = 1.0
-    mapping_risk_buffer_cents: float = 1.0
 
     # Liquidity buffer scaling (P2.9): `liquidity_buffer_cents` above is now
     # the buffer at `liquidity_reference_size` depth, not a flat value --

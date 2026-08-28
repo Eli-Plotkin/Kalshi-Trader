@@ -375,8 +375,7 @@ class TestScanOnRealPayloads:
         liquidity_buffer = scanner._liquidity_buffer_cents(
             book[1] if book is not None else None, CONFIG)
         buffers = (liquidity_buffer
-                   + CONFIG.stale_odds_buffer_cents
-                   + CONFIG.mapping_risk_buffer_cents)
+                   + CONFIG.stale_odds_buffer_cents)
         assert opp.net_edge_cents == pytest.approx(
             opp.gross_edge_cents - expected_fee - buffers)
 

@@ -96,7 +96,6 @@ def scan_opportunity(
         buffers = (
             _liquidity_buffer_cents(book_size, config)
             + config.stale_odds_buffer_cents
-            + config.mapping_risk_buffer_cents
         )
         net_edge = gross_edge - fee - buffers
         max_contracts = _max_contracts_for_budget(price, config.max_position_usd)
