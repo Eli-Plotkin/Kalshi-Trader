@@ -201,7 +201,7 @@ class KalshiClient:
             resp = self.session.get(f"{self.base_url}{path}", headers=headers)
             resp.raise_for_status()
             return resp.json().get("order", {})
-        except:
+        except Exception:
             return None
 
     def cancel_order(self, order_id):
