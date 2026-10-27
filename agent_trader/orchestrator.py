@@ -243,7 +243,6 @@ def _benchmark(plan: ResearchPlan, findings: Findings) -> tuple[bool, str]:
       - every required_datapoint is answered (i.e. NOT in findings.unanswered)
       - average finding confidence >= plan.confidence_threshold
     """
-    answered = set(f.question for f in findings.findings)
     missing_dp = [dp for dp in plan.required_datapoints if dp in findings.unanswered]
     if missing_dp:
         return False, f"missing_datapoints={len(missing_dp)}/{len(plan.required_datapoints)}"
@@ -252,7 +251,6 @@ def _benchmark(plan: ResearchPlan, findings: Findings) -> tuple[bool, str]:
     avg_conf = sum(f.confidence for f in findings.findings) / len(findings.findings)
     if avg_conf < plan.confidence_threshold:
         return False, f"avg_confidence={avg_conf:.2f}<{plan.confidence_threshold:.2f}"
-    _ = answered  # reserved for future per-question coverage check
     return True, f"avg_confidence={avg_conf:.2f}"
 
 
@@ -620,7 +618,6 @@ def run_cycle(
     cycle_spent_at_start = cycle_budget.cycle_spent_usd
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    import sqlite3 as _sqlite3
 
     def _run_one(seq: int, rationale: str, market: EligibleMarket):
         # Each worker thread needs its own sqlite connection (the default
@@ -676,7 +673,6 @@ def run_cycle(
     # against private copies seeded with the start-of-parallel snapshot, so
     # cycle_budget hasn't seen their increments yet.
     cycle_budget.cycle_spent_usd = cycle_spent_at_start + total_market_spend
-    _ = _sqlite3  # imported above for future per-worker cleanup hooks
 
     if killswitch:
         killswitch.note_cycle_api_status(had_errors=had_api_errors)

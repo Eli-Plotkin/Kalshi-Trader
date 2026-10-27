@@ -5,7 +5,6 @@ import logging
 import os
 import signal
 import sqlite3
-import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
