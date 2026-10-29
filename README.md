@@ -9,9 +9,9 @@ odds as the fair-value anchor for Kalshi sports markets.
 | Package | What it is | Entry point |
 | --- | --- | --- |
 | `sportsbook_sourced/` | Sportsbook-consensus edge scanner with paper fills, SQLite persistence, and settlement PnL evaluation (CLV evaluation is still scaffolding). | `python -m sportsbook_sourced.cli scan` |
-| `kalshi/` | Signed-request HTTP client and shared credentials. No trading logic. | imported by packages |
+| `kalshi/` | Signed-request HTTP client, shared credentials, and a read-only `preflight` check. No trading logic. | imported by packages; `python -m kalshi.preflight` |
 | `agent_trader/` | Frozen LLM-driven research/trading experiment. Kept for reference, not the active path. | `python -m agent_trader.scheduler` |
-| `nba_trading/` | Earlier NBA price-range bot. The only package that places real orders. Dry-run by default. | `python -m nba_trading.main [--live]` |
+| `nba_trading/` | NBA favorite-price-band bot, being prepared for live trading. The only package with real order placement; dry run by default, never yet run live. SQLite ledger, read-only dashboard, order reconciliation. See [`docs/architecture.md`](docs/architecture.md) Part 2. | `python -m nba_trading.main [--live]` |
 | `misprice_discovery/` | Historical research scripts, simulations, and validation helpers. | module-specific scripts |
 
 `sportsbook_sourced/` is intentionally separate from `agent_trader/`. In this
@@ -165,3 +165,22 @@ The old `agent_trader/` LLM agent is paused at `v0-frozen`: its pipeline ran
 end-to-end and wrote decision rows, but it stopped before meaningful forward
 paper trading. It remains useful as reference code, but it is not the current
 architecture.
+
+## NBA Bot Status
+
+`nba_trading/` buys the favorite before tip-off when its YES ask is inside a price band (shipped
+as 91-99c, 10% of equity per trade). It has run only as a dry run; **it has never placed a real
+order**, and the band is a hypothesis being tested live, not a proven edge. The pieces that exist
+and are tested (1,060 tests): equity-based drawdown breaker, exposure cap, kill switch,
+bounded retries of failed reads (never of orders), order reconciliation that asks Kalshi instead of
+guessing after a timeout, settlement from Kalshi's actual fills, an SQLite ledger, a read-only
+Streamlit dashboard, alerts, and Docker/Litestream deployment files (not yet built or run).
+
+What is not done: a real order has never gone through, the field names in real Kalshi fill/order/
+position responses are unverified, and live trading needs an eligible, funded account that has
+completed Kalshi's own location verification.
+
+- Run it (dry run): `python -m nba_trading.main`; dashboard: `streamlit run nba_trading/dashboard/app.py`
+- Check the Kalshi endpoints (read-only): `python -m kalshi.preflight`
+- Architecture and write policies: [`docs/system-architecture.md`](docs/system-architecture.md)
+- Deploying to a server: [`docs/deployment.md`](docs/deployment.md)

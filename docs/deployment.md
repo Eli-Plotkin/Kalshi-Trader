@@ -56,8 +56,9 @@ Run the NBA bot, the dashboard, and continuous ledger backups on one small alway
    + ntfy / webhook / Healthchecks.io                       object storage
 ```
 
-* `bot` is the only writer of the ledger; `dashboard` opens it read-only and only writes the
-  kill-switch file. `litestream` streams the WAL to object storage about once a second.
+* `bot` is the only application writer of the ledger; `dashboard` opens it read-only and only writes the
+  kill-switch file. `litestream` reads the database file and streams changes to object storage with
+  roughly a one-second lag (asynchronous, not synchronous).
 * The private key is a read-only bind mount (`/run/secrets/kalshi_private_key.pem`) from the
   host, outside the image. The dashboard container has no Kalshi credentials at all.
 * All three services use `restart: unless-stopped`. A one-shot `init` service fixes volume
@@ -257,9 +258,11 @@ Verify exposure from another machine: `nc -vz <public-ip> 8501` must fail.
 
 ## 8. Backups with Litestream
 
-The ledger (decisions, orders, fills, settlements, paper trades, snapshots, events) is the
-audit trail and the dashboard's source of truth. Litestream replicates it continuously
-(sync interval 1 s, daily snapshots, 7 days retention) to your bucket.
+The ledger (decisions, orders, fills, settlements, paper trades, snapshots, events, plus the open-position lots, drawdown peak and schedule) is the dashboard's source of truth and the
+bot's record of what it did. It is not a perfect audit trail: an order can be missing from it for a
+moment after a crash between sending and recording, which the bot repairs on the next start by asking
+Kalshi (the write-ahead `submitting` row is the evidence). Litestream replicates it asynchronously
+(about 1 s behind, daily snapshots, 7 days retention) to your bucket, so a crash can lose the last second or so of writes.
 
 Setup: create a private bucket and a bucket-scoped access key at any S3-compatible
 provider (Cloudflare R2, Backblaze B2, AWS S3, Hetzner Object Storage, ...), fill the
@@ -351,7 +354,7 @@ Configured through env vars (implemented in `nba_trading/alerts.py` and called f
 
 | Variable | Purpose |
 |---|---|
-| `HEALTHCHECK_URL` | Healthchecks.io-style ping URL. The bot pings on each successful health job (every 30 min); if pings stop, Healthchecks alerts you. This is the dead-man's switch that also catches a hung or dead host. |
+| `HEALTHCHECK_URL` | Healthchecks.io-style ping URL. The health job (every 30 min) pings `ok` when the balance fetch worked and `/fail` when it did not or the job raised; if pings stop altogether, Healthchecks alerts you. This is the dead-man's switch that also catches a hung or dead host. |
 | `ALERT_NTFY_URL` | ntfy topic URL, e.g. `https://ntfy.sh/<long-random-topic>`; push to your phone. Treat the topic name as a secret. |
 | `ALERT_WEBHOOK_URL` | Generic JSON webhook (Slack/Discord-compatible relays, etc.). |
 | `ALERT_MIN_LEVEL` | `INFO`, `WARNING`, `ERROR` or `CRITICAL` (default `ERROR`). |
@@ -383,9 +386,12 @@ docker compose ps && docker compose logs --tail=50 bot
 ```
 
 Prefer deploying between game nights: the bot re-plans at 00:05 UTC. A restart mid-night
-recovers the saved schedule (including which games already fired) and reconciles positions, but
-avoid it close to tip-off. Only one bot can run per database (an OS lock enforces this), so
-stop the old container before starting a new one. Run `python -m pytest` (or let CI run) before pulling to a live host.
+recovers the saved schedule (including which games already fired) and, at startup, asks Kalshi about
+any order whose outcome it never learned and re-queues the post-tip fill checks. Positions are
+reconciled against Kalshi inside each live game evaluation and every 30 minutes by the health job,
+not at startup itself. Avoid restarting close to tip-off. An OS lock stops two bots on the SAME
+host and volume only; it cannot stop a second copy on another server (for example a restore while
+the old server is still running), so stop the old one first. Run `python -m pytest` (or let CI run) before pulling to a live host.
 
 **Roll back**
 
@@ -397,16 +403,21 @@ IMAGE_TAG=<previous-sha> docker compose up -d --no-build
 ```
 
 If the old image is gone: `git checkout <previous-sha> && IMAGE_TAG=<previous-sha> docker compose up -d --build`
-(then `git switch main` when you are ready to move forward again). Ledger schema changes use
-`CREATE TABLE IF NOT EXISTS`, so rolling back code does not require rolling back the database.
+(then `git switch main` when you are ready to move forward again). The ledger schema is versioned
+(`PRAGMA user_version`) and migrates forward in place when the bot starts, adding columns and tables. An
+older image will still open a newer database but ignores the columns it does not know; if a
+release ever changes a column in a way that old code cannot read, restore the Litestream backup taken
+before upgrading instead of rolling the code back alone.
 
 **Stop everything:** `docker compose down` (keeps the volume). `docker compose down -v` deletes the
 volume and the local ledger; do not run it unless you have verified a backup.
 
 ## 12. Kill switch
 
-Presence of the kill-switch file stops **new orders** immediately without killing the process (it
-is checked before every order). Existing positions are unaffected and still settle; the bot keeps
+Presence of the kill-switch file stops **new orders** without killing the process: it is checked at the
+start of each game evaluation (about 15 minutes before a game), so it takes effect for every game
+that has not yet been evaluated. An evaluation already in progress is not interrupted, and resting
+orders already on Kalshi are not cancelled (they expire at tip-off). Existing positions are unaffected and still settle; the bot keeps
 writing heartbeats.
 
 * **Dashboard:** use the Kill switch toggle (reach it via section 7).

@@ -27,7 +27,8 @@ RUN pip install -r requirements.txt -r requirements-dashboard.txt
 # Application code (see .dockerignore for what is excluded).
 COPY . .
 
-# /app/data is the shared named volume (ledger, state JSON, kill switch).
+# /app/data is the shared named volume (the SQLite ledger, which holds all durable state; the
+# kill-switch file; the bot log).
 # Creating it here with the right owner lets a fresh named volume inherit it.
 RUN mkdir -p /app/data && chown app:app /app/data && chmod +x /app/deploy/entrypoint-bot.sh
 

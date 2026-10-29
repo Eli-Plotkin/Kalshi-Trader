@@ -1,12 +1,14 @@
 # Kalshi-Trader Architecture
 
-*Last updated: 2026-09-03*
+*Last updated: 2026-10-29*
 
 This repo has three trading architectures across its history, plus a research
 package. `sportsbook_sourced/` is the active development track — deterministic,
 code-owned pricing with sportsbook odds as the fair-value anchor, currently
-paper-only. `nba_trading/` is an earlier, simpler bot that is the only package
-in the repo with real order-placement code wired up. `agent_trader/` is the
+paper-only. `nba_trading/` is a simpler bot (a fixed price band) that is the only
+package in the repo with real order-placement code wired up, and it is the one
+being prepared for live trading; it has run as a dry run only and has never
+placed a real order. `agent_trader/` is the
 earliest, frozen experiment where an LLM cascade did the research and trading
 judgment. `misprice_discovery/` is research scripts and simulators, not a
 trading system — see the root [`README.md`](../README.md) for that one. See
@@ -145,94 +147,135 @@ decisions), see [`sportsbook_sourced/CLAUDE.md`](../sportsbook_sourced/CLAUDE.md
 
 ---
 
-## Part 2 — `nba_trading/`: earlier NBA price-segment bot
+## Part 2 — `nba_trading/`: NBA price-band bot
 
 ### Status
 
-Not frozen the way `agent_trader/` is, but not under active development
-either — it predates `sportsbook_sourced/` and uses a much simpler thesis
-(a fixed price band rather than a sportsbook-derived fair value). **This is
-currently the only package in the repo that calls `kalshi.client.place_limit_order`
-with real money** — `sportsbook_sourced/` and `agent_trader/` are both
-paper/simulated only. Anyone about to run this unattended with real capital
-should read `nba_trading/main.py` directly, not just this summary.
+Built up to the point of being ready to try with real money, but **it has never
+placed a real order**: it runs as a dry run (the default), and the one real-order
+attempt was rejected by Kalshi's location verification. It is the only package
+that calls `kalshi.client.place_limit_order`; `sportsbook_sourced/` and
+`agent_trader/` are paper/simulated only. The detailed, code-verified picture
+(components, data stores, write policies, failure modes, ranked gaps) is in
+[`system-architecture.md`](system-architecture.md); the order-reconciliation design
+is in [`design-g4-reconciliation.md`](design-g4-reconciliation.md); running it on a
+server is in [`deployment.md`](deployment.md). This section is the short version.
 
 ### Thesis
 
-Before tip-off, the market-favored team's Kalshi YES price should already
-reflect most public information, but late-forming price bands may still
-contain mispriced longshots-vs-favorites effects. The bot buys the favorite
-(the team with the higher implied ask) only when that ask falls inside a
-configurable price band (`STRATEGY_PRICE_MIN`/`STRATEGY_PRICE_MAX` in
-`.env`, via `strategy_config.py`) — no sportsbook odds are consulted at all.
+Before tip-off, the market-favored team's Kalshi YES price should already reflect
+most public information, but the very heavy favorites may be priced a little too
+low. The bot buys the favorite (the team with the higher implied ask) only when
+that ask falls inside a configurable band (`STRATEGY_PRICE_MIN`/`STRATEGY_PRICE_MAX`,
+shipped as 91-99c) — no sportsbook odds are consulted. This is a hypothesis under
+test, not a proven edge: the historical backtest (`misprice_discovery/edge_validation.py`)
+is suggestive, and the dashboard compares live results with the win rate the entry
+price implied.
 
 ### Data flow
 
 ```text
-NBA schedule for today (nba_scheduler.py::get_todays_schedule_map)
-  -> one job scheduled per game at T-15-minutes-to-tipoff (APScheduler)
-At T-15:
-  Kalshi markets + orderbooks for both teams (client.fetch_nba_markets, client.get_orderbook)
-  -> identify favorite by implied ask (strategy.py::identify_favorite)
-  -> price-band gate (strategy.py::should_buy)
-  -> bankroll-fraction position sizing (strategy.py::compute_shares_to_buy)
-  -> limit order placement (kalshi.client.place_limit_order), expiring at tip-off
-  -> position recorded (portfolio.py::Portfolio.add_position)
-At tip-off + 2 minutes:
-  -> fill status checked (main.py::confirm_fill_job) and portfolio reconciled
-  -> unfilled orders drop the position; partial fills update quantity
+Kalshi open NBA markets (client.fetch_nba_markets)
+  -> games and tip-off times: expected_expiration_time - 3h, per game
+     (nba_scheduler.games_from_kalshi_markets; no outside schedule source)
+  -> one APScheduler job per game at T-15 minutes; the day is re-planned by a
+     00:05 UTC cron job (a wall-clock job, not a sleep, so a sleeping machine catches up)
+At T-15 (main.pre_game_job; games that tip off together are evaluated one at a time):
+  kill-switch file -> balance
+  -> [live] one Kalshi positions fetch: clear settled lots, and adopt positions the bot did not
+     know about (attributing one to its unresolved order, via a Kalshi lookup, when there is one)
+  -> equity = cash + capital at risk (Kalshi's own exposure figures) -> drawdown breaker
+  -> markets + orderbooks -> favorite by implied ask -> band gate
+  -> limit price (never above the band maximum) -> size = fraction of EQUITY,
+     capped by cash and by the total-exposure cap
+  -> write-ahead order row -> place_limit_order (V2 endpoint, expires at tip-off,
+     deterministic client_order_id)
+  -> placed: record the lot, queue the fill check
+     unknown outcome (timeout, 409, malformed reply): ask Kalshi by client_order_id
+At tip-off + 2 minutes: confirm_fill_job records Kalshi's order state and lets Kalshi's
+  positions correct the lots (an unfilled order expires; a partial fill shrinks the lot).
+Every 30 minutes: health_job resolves unknown orders, snapshots equity, syncs Kalshi fills,
+  settles finished games from the actual fills, settles paper trades, and sends a heartbeat.
 ```
 
-Before every order, a drawdown circuit breaker (`portfolio.py::HighWaterMark`)
-compares current cash against the all-time peak (tracked only while flat, so
-an open position's cash dip doesn't get mistaken for a drawdown) and halts
-new bets above `STRATEGY_MAX_DRAWDOWN_PCT`.
+A read that fails (balance, positions, markets, orderbook) is *transient*: the game is
+retried up to 3 times about a minute apart, then skipped. An **order is never retried**:
+a missed trade is preferred to a double buy.
+
+### Risk controls
+
+- **Drawdown breaker** on *equity* (cash plus open cost), against the all-time peak, so
+  cash locked in open positions is not mistaken for a loss
+  (`STRATEGY_MAX_DRAWDOWN_PCT`, default 25).
+- **Exposure cap** on total open cost as a share of equity (`STRATEGY_MAX_EXPOSURE_PCT`,
+  default 30), enforced under a lock so simultaneous games cannot each see the same headroom.
+- **Kill switch**: creating the `STOP_TRADING` file (or the dashboard toggle) stops new orders
+  at the next game evaluation; resting orders are not cancelled (they expire at tip-off).
+- **Live gate**: `--live` requires typing `LIVE` (or `BOT_LIVE_CONFIRM=LIVE` when headless).
+- **Single instance**: an OS file lock stops two bots running against one database.
+- **Clock check** at startup (request signatures are timestamped); live mode refuses to start
+  if the clock is more than 30 s off, and a reading is only trusted when its round trip is short.
 
 ### Persistence & crash recovery
 
-Three flat JSON files (paths configurable via env, gitignored by default):
-`schedule_data.json` (today's games and whether each has fired),
-`portfolio_data.json` (open tax-lot positions per ticker), and
-`high_water_mark.json` (the peak balance for drawdown calculation). On
-restart, `setup_daily_schedule` reloads today's schedule and re-registers
-any game whose T-15 job hasn't fired yet; if the T-15 window was missed
-entirely during downtime but tip-off hasn't happened, it fires immediately.
+All durable state lives in **one SQLite file** (`LEDGER_FILE`, default
+`data/nba_ledger.sqlite`), so a single replica (Litestream) backs up everything:
+`decisions` (every game evaluated, with the reason for each skip), `orders`
+(write-ahead `submitting` -> `placed`/`unconfirmed`/`not_found`/`adopted`/...),
+`settlements` (PnL from Kalshi's actual fills), `kalshi_fills`, `snapshots`, `events`,
+`paper_trades` (one-contract hypothetical trades for in-band dry-run decisions),
+`portfolio_lots`, `schedule_games`, `kv` (drawdown peak, schedule date). The schema is
+versioned (`PRAGMA user_version`) and migrates in place. The old JSON files
+(`schedule_data.json`, `portfolio_data.json`, `high_water_mark.json`) are **import-only**: read
+once into an empty database and never written again.
+
+On restart the bot recovers: it asks Kalshi about every order whose outcome it never learned,
+re-creates the post-tip fill check for every open order (the scheduler's job store is in
+memory), reloads today's schedule and re-registers any game that has not fired, and fires
+immediately for a game whose T-15 passed while tip-off has not.
 
 ### Entry point
 
 ```bash
-python -m nba_trading.main           # dry-run (default): real data, no orders
-python -m nba_trading.main --live    # places real orders
+python -m nba_trading.main           # dry run (default): real data, no orders
+python -m nba_trading.main --live    # places real orders (asks you to type LIVE)
+streamlit run nba_trading/dashboard/app.py   # read-only dashboard + kill-switch toggle
+python -m kalshi.preflight           # read-only checks of the Kalshi endpoints the bot uses
 ```
 
-Dry-run runs the whole pipeline against live Kalshi data but sends no order,
-records no position, and never marks a game fired, so it can't suppress a
-later live run.
+A dry run places no order and holds no position, but it is **not stateless**: it writes
+decisions, equity snapshots, events, paper trades, the drawdown peak and the schedule to the
+ledger. It never marks a game fired, so it cannot suppress a later live run.
 
 ### Order safety
 
-- `client_order_id` is deterministic (`nba-<game_id>-<ticker>`), so a
-  re-fired job after a crash is rejected by Kalshi as a duplicate instead of
-  double-buying.
-- Orders go through Kalshi's V2 endpoint (`POST /portfolio/events/orders`);
-  the legacy `/portfolio/orders` path was deprecated in June 2026. A 409 on
-  a repeated `client_order_id` is treated as "already placed" and triggers
-  the same position reconciliation.
-- A game is marked fired only after its job finishes, not on entry.
-- If the order call fails without a definitive rejection (it may have
-  landed), the bot checks Kalshi's positions, records the position if found,
-  and otherwise logs CRITICAL for manual verification. It never retries.
+- `client_order_id` is deterministic (`nba-<game_id>-<ticker>`; the game id uses the US/Eastern
+  date so it is stable across the midnight-UTC rollover), so a repeat is rejected by Kalshi.
+- Orders go through Kalshi's V2 endpoint (`POST /portfolio/events/orders`); the legacy
+  `/portfolio/orders` path was deprecated in June 2026. A POST is **never** retried
+  automatically.
+- The order row is written *before* the POST. If the reply is lost (timeout, 409, crash), the
+  bot **asks Kalshi** (`get_order_by_client_id`) whether the order landed instead of guessing,
+  and it never re-sends. Found: tracked from then on. Not found: recorded as `not_found`, which
+  is provisional (re-checked for 48 h) and is not an invitation to re-send.
+- One ledger row per real trade: positions and fills Kalshi reports for an order the bot lost
+  track of are attributed to that order's row, not adopted as a second trade.
+- A game is marked fired only after its job reaches a final outcome, not on entry and not while
+  a transient-failure retry is pending.
 
-### Known gaps (as of 2026-10)
+### Known gaps (as of 2026-10-29)
 
-- No manual halt-file kill switch like `agent_trader/`'s
-  `~/.kalshi-agent.halt` — the only way to stop new bets mid-run is the
-  drawdown circuit breaker or killing the process.
-- No process supervisor/auto-restart is documented; an unhandled crash in
-  the main loop logs and exits rather than recovering.
-- No push alerting (email/Slack) on crashes, circuit-breaker trips, or
-  CRITICAL ambiguous-order logs.
-- No portfolio-wide exposure cap; sizing is per-trade only.
+The ranked list with evidence is `system-architecture.md` section 8.2. The headline ones:
+
+- Never traded live: the order, status and cancel path, and the field names in real fill, order
+  and position responses, are verified only against documentation and fakes.
+- Kalshi's location verification must be completed by an eligible account holder before API
+  trading can work at all.
+- The container, Litestream and CI files are written but have never been built or run.
+- Not yet verified: whether Kalshi reserves cash for resting orders, which affects how the
+  unfilled part of a partly filled order is counted in equity (review item F8).
+- Manual trades made on the same account in NBA game markets are adopted into the ledger and
+  would contaminate the live-edge statistics.
 
 ---
 

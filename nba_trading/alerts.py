@@ -1,19 +1,14 @@
 """Push alerts + dead-man's-switch pings for the NBA bot.
 
-HOW TO WIRE THIS IN (nba_trading/main.py)
------------------------------------------
-1. Import:  ``from nba_trading import alerts``
-2. In ``_event(level, kind, message)`` add, after the ledger write (outside any
-   ledger try/except so a ledger failure cannot skip it)::
-
-       alerts.notify(level, kind, message)
-
-   Every event goes through ``notify``; it filters by ``ALERT_MIN_LEVEL``
-   (default CRITICAL), de-duplicates per ``kind`` and never raises/blocks.
-3. In ``health_job``: on success call ``alerts.ping_healthcheck("ok")``; in the
-   ``except`` path call ``alerts.ping_healthcheck("fail")``. If the process dies
-   or hangs the pings stop and Healthchecks.io alerts you (dead-man's switch).
-4. Optionally call ``alerts.flush()`` on shutdown so a last alert is not lost.
+HOW IT IS USED (nba_trading/main.py)
+------------------------------------
+``main._event(level, kind, message)`` calls ``alerts.notify(level, kind, message)`` for every
+event after the ledger write (heartbeats excepted), and ``health_job`` calls
+``alerts.ping_healthcheck("ok")`` when the balance fetch worked and ``("fail")`` when it did not or
+the job raised. ``notify`` filters by ``ALERT_MIN_LEVEL`` (default ERROR, set in
+``nba_trading/config.py``), de-duplicates per ``kind`` and never raises or blocks. If the process
+dies or hangs the pings stop and Healthchecks.io alerts you (dead-man's switch).
+``alerts.flush()`` is called on shutdown so a last alert is not lost.
 
 Configuration (env, empty = disabled; see nba_trading/config.py):
 ALERT_NTFY_URL, ALERT_WEBHOOK_URL, ALERT_MIN_LEVEL, ALERT_COOLDOWN_MINUTES,

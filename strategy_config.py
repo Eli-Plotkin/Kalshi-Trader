@@ -12,7 +12,7 @@ a proven edge. Set the env vars below in your `.env` file to change them.
 Env vars (all optional, all have defaults):
   STRATEGY_PRICE_MIN            cents — lower bound of the favorite price band
   STRATEGY_PRICE_MAX            cents — upper bound
-  STRATEGY_BANKROLL_FRACTION    0..1  — fraction of cash bankroll to risk per bet
+  STRATEGY_BANKROLL_FRACTION    0..1  — fraction of EQUITY (cash + open cost) to risk per bet
   STRATEGY_LIMIT_BUFFER_CENTS   cents — slippage tolerance above current ask
   STRATEGY_MAX_DRAWDOWN_PCT     0..100 — circuit-breaker threshold
   STRATEGY_MAX_EXPOSURE_PCT     0..100 — cap on total open cost as % of equity
@@ -52,7 +52,7 @@ BANKROLL_FRACTION = _env_float("STRATEGY_BANKROLL_FRACTION", 0.10)
 # How many cents above current ask we're willing to pay (slippage tolerance).
 LIMIT_BUFFER_CENTS = _env_int("STRATEGY_LIMIT_BUFFER_CENTS", 0)
 
-# Halt new bets if cash bankroll falls this far below its all-time peak.
+# Halt new bets if EQUITY (cash + capital at risk) falls this far below its all-time peak.
 MAX_DRAWDOWN_PCT = _env_float("STRATEGY_MAX_DRAWDOWN_PCT", 25.0)
 
 # Cap on total capital at risk across all open positions, as a % of equity

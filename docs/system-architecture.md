@@ -721,6 +721,8 @@ separate writable volume; record toggles in an append-only file the bot ingests 
 
 ### 8.3 Discrepancies: docs and comments vs code
 
+*Status 2026-10-29: D1-D12 below were corrected in the docs and code comments (`main.py` docstring, `alerts.py`, `strategy_config.py`, `.env.example`, `Dockerfile`, `docs/architecture.md` Part 2, `docs/deployment.md`, README). Kept here as a record of what was wrong.*
+
 | # | Statement | Where | What the code does |
 |---|---|---|---|
 | D1 | "Dry-run ... no state is persisted" | `nba_trading/main.py` module docstring (`docs/architecture.md` Part 2 says dry-run "records no position", which is true, but omits what is recorded) | Dry runs *do* persist: `decisions`, `snapshots`, `events` (incl. heartbeats), `paper_trades`, `kv` peak and the schedule. What they do not persist: orders, lots, fired flags. (`test_dry_run_places_no_order_and_persists_nothing` is about orders/positions.) |
@@ -732,7 +734,7 @@ separate writable volume; record toggles in an append-only file the bot ingests 
 | D7 | "The ledger is the audit trail"; "bot is the only writer" | `docs/deployment.md` sections 8 and Architecture | Orders can be missing from it after a crash (G4); Litestream also writes to the DB file at the SQLite level **[A]**; the dashboard also writes the kill-switch file. |
 | D8 | "Only one bot can run per database (an OS lock enforces this)" | `docs/deployment.md` section 11 | True per host/filesystem only (G7). |
 | D9 | Healthchecks "pings on each successful health job" | `docs/deployment.md` section 10 | Pings `ok` when the balance fetch worked and `/fail` when it did not or the job raised; the `heartbeat` event is written in both cases. |
-| D10 | "Ledger schema changes use CREATE TABLE IF NOT EXISTS, so rolling back code does not require rolling back the database" | `docs/deployment.md` section 11 | Holds for new tables only; there is no migration for altered columns. |
+| D10 | "Ledger schema changes use CREATE TABLE IF NOT EXISTS, so rolling back code does not require rolling back the database" | `docs/deployment.md` section 11 | Was true only for new tables. Column migrations now exist (`Ledger._migrate`, `PRAGMA user_version`); the doc now says to restore the backup if a release makes an incompatible change. |
 | D11 | Dockerfile comment "/app/data is the shared named volume (ledger, state JSON, kill switch)" | `Dockerfile` | State JSON is no longer written; the volume holds the ledger (incl. state), kill switch and log. |
 | D12 | Litestream replication described as "continuous" | `docs/deployment.md` section 8 | Asynchronous, about 1 s lag, not synchronous; see 4.8. |
 

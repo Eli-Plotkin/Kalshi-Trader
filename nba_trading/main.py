@@ -1,14 +1,16 @@
 """NBA price-segment bot — fires 15 minutes before tipoff and buys favorites
 whose pre-game YES ask falls inside a configurable price band, sized as a
-fraction of current cash bankroll.
+fraction of EQUITY (cash plus capital at risk), capped by cash and an exposure cap.
 
 All strategy parameters (band edges, sizing, drawdown limits) come from
-`strategy_config.py`, which reads them from `.env`. The repo's defaults are
-deliberately neutral placeholders — use `misprice_discovery/` tools to research
-your own band before configuring.
+`strategy_config.py`, which reads them from `.env`. The shipped defaults are the
+91-99c band at 10% of equity: a hypothesis under test, not a proven edge.
 
 Dry-run is the default: the full pipeline runs against live Kalshi data but no
-order is placed and no state is persisted. Pass `--live` to trade real money.
+order is placed and no position is held. A dry run is NOT stateless: it records
+decisions, equity snapshots, events, paper trades, the drawdown peak and the schedule
+in the SQLite ledger (it never marks a game fired, so it cannot suppress a live run).
+Pass `--live` to trade real money. See docs/system-architecture.md for the full picture.
 """
 import argparse
 import os
