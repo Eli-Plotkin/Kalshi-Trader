@@ -1,0 +1,20 @@
+# Continuous replication of the SQLite ledger to S3-compatible object storage.
+# ${VARS} are expanded by Litestream from the container environment (see
+# docker-compose.yml / .env). Works with AWS S3, Cloudflare R2, Backblaze B2,
+# Hetzner Object Storage, MinIO, etc.
+#
+# Replicates the whole SQLite file. All durable bot state (positions, drawdown peak,
+# schedule, ledger) lives in it, so this is the only backup needed.
+dbs:
+  - path: /app/data/nba_ledger.sqlite
+    replicas:
+      - type: s3
+        bucket: ${LITESTREAM_BUCKET}
+        path: ${LITESTREAM_PATH}          # prefix inside the bucket, e.g. kalshi-ledger
+        endpoint: ${LITESTREAM_ENDPOINT}  # leave empty for AWS S3
+        region: ${LITESTREAM_REGION}      # R2 uses "auto"
+        access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
+        secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
+        sync-interval: 1s
+        snapshot-interval: 24h
+        retention: 168h                   # keep 7 days of WAL/snapshots

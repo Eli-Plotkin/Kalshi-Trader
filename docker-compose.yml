@@ -1,0 +1,147 @@
+# Kalshi NBA bot: bot + dashboard + Litestream on one small VPS.
+# See docs/deployment.md. Copy .env.example to .env and fill it in first.
+#
+#   docker compose up -d --build        # starts in DRY mode unless BOT_MODE=live
+#   docker compose ps / logs -f bot
+#
+name: kalshi
+
+x-app-build: &app-build
+  context: .
+  dockerfile: Dockerfile
+
+x-hardening: &hardening
+  restart: unless-stopped
+  init: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "5"
+
+services:
+  # One-shot: make sure the shared volume is owned by the unprivileged app user
+  # (uid 10001) before anything else touches it. Runs as root, exits immediately.
+  init:
+    image: kalshi-trader:${IMAGE_TAG:-local}
+    build: *app-build
+    user: "0:0"
+    entrypoint: ["sh", "-c", "chown -R 10001:10001 /app/data"]
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+    restart: "no"
+    healthcheck:
+      disable: true
+    volumes:
+      - data:/app/data
+
+  bot:
+    <<: *hardening
+    image: kalshi-trader:${IMAGE_TAG:-local}
+    build: *app-build
+    entrypoint: ["/app/deploy/entrypoint-bot.sh"]
+    working_dir: /app/data            # trade_bot.log lands on the volume
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    env_file:
+      - .env                          # API_KEY_ID, strategy vars, alert vars, ...
+    environment:
+      # Safety: real orders only when BOT_MODE=live AND BOT_LIVE_CONFIRM=LIVE.
+      BOT_MODE: ${BOT_MODE:-dry}
+      BOT_LIVE_CONFIRM: ${BOT_LIVE_CONFIRM:-}
+      # Private key is a read-only bind mount (below); overrides any .env value.
+      PRIVATE_KEY_PATH: /run/secrets/kalshi_private_key.pem
+      # All mutable state lives in the SQLite ledger on the shared volume. The three JSON
+      # paths below are only read once (legacy import on first run); a fresh server has none.
+      LEDGER_FILE: /app/data/nba_ledger.sqlite
+      KILL_SWITCH_FILE: /app/data/STOP_TRADING
+      SCHEDULE_FILE: /app/data/schedule_data.json
+      PORTFOLIO_FILE: /app/data/portfolio_data.json
+      HIGH_WATER_FILE: /app/data/high_water_mark.json
+    volumes:
+      - data:/app/data
+      # chown 10001:10001 + chmod 600 on the host file (docs/deployment.md).
+      - ${KALSHI_PRIVATE_KEY_FILE:-./secrets/kalshi_private_key.pem}:/run/secrets/kalshi_private_key.pem:ro
+    healthcheck:
+      # Healthy while the newest heartbeat event (written every 30 min) is < 50 min old.
+      # Read-only SQLite open. Note: Docker only marks the container "unhealthy";
+      # it does not restart it. Use the Healthchecks.io dead-man's switch for alerts.
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import sqlite3, sys
+          from datetime import datetime, timezone
+          try:
+              c = sqlite3.connect("file:/app/data/nba_ledger.sqlite?mode=ro", uri=True, timeout=5)
+              r = c.execute("SELECT max(ts) FROM events WHERE kind='heartbeat'").fetchone()[0]
+              age = (datetime.now(timezone.utc) - datetime.fromisoformat(r)).total_seconds() / 60
+              sys.exit(0 if age < 50 else 1)
+          except Exception:
+              sys.exit(1)
+      interval: 5m
+      timeout: 15s
+      retries: 2
+      start_period: 5m
+
+  dashboard:
+    <<: *hardening
+    image: kalshi-trader:${IMAGE_TAG:-local}
+    build: *app-build
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    # No Kalshi credentials here: the dashboard only reads the ledger and
+    # toggles the kill-switch file.
+    environment:
+      LEDGER_FILE: /app/data/nba_ledger.sqlite
+      KILL_SWITCH_FILE: /app/data/STOP_TRADING
+    volumes:
+      - data:/app/data
+    ports:
+      # LOOPBACK ONLY. The dashboard can resume trading; never publish it on 0.0.0.0.
+      # Reach it via SSH tunnel / Tailscale / Cloudflare Access (docs/deployment.md).
+      - "127.0.0.1:8501:8501"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=5).status == 200 else 1)"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  litestream:
+    <<: *hardening
+    image: litestream/litestream:0.3.13
+    user: "10001:10001"
+    command: ["replicate", "-config", "/etc/litestream.yml"]
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    environment:
+      LITESTREAM_BUCKET: ${LITESTREAM_BUCKET:?set LITESTREAM_BUCKET in .env}
+      LITESTREAM_PATH: ${LITESTREAM_PATH:-kalshi-ledger}
+      LITESTREAM_ENDPOINT: ${LITESTREAM_ENDPOINT:-}
+      LITESTREAM_REGION: ${LITESTREAM_REGION:-us-east-1}
+      LITESTREAM_ACCESS_KEY_ID: ${LITESTREAM_ACCESS_KEY_ID:?set LITESTREAM_ACCESS_KEY_ID in .env}
+      LITESTREAM_SECRET_ACCESS_KEY: ${LITESTREAM_SECRET_ACCESS_KEY:?set LITESTREAM_SECRET_ACCESS_KEY in .env}
+    volumes:
+      - data:/app/data
+      - ./deploy/litestream.yml:/etc/litestream.yml:ro
+
+volumes:
+  data:
+    name: kalshi_data

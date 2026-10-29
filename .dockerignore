@@ -1,0 +1,35 @@
+# Secrets and local state must never enter the image.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+data/
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.db
+schedule_data.json
+portfolio_data.json
+high_water_mark.json
+STOP_TRADING
+trade_bot.log*
+*.log
+
+# Environments, caches, VCS
+venv/
+.venv/
+env/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+.git/
+.github/
+.claude/
+.DS_Store
+
+# Large research artefacts not needed at runtime
+*.csv

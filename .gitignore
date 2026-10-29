@@ -240,3 +240,5 @@ logs/
 
 .DS_Store
 */CLAUDE.md
+# Bot run output
+data/*.out

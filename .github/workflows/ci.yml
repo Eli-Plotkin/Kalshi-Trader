@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Run the (stub) deploy job. Disabled until you fill in the placeholders below."
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # kalshi/config.py raises at import if these are missing. Dummy values only;
+      # no test talks to Kalshi.
+      API_KEY_ID: ci-dummy
+      PRIVATE_KEY_PATH: /tmp/ci-dummy.pem
+      KALSHI_ENV: demo
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dashboard.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dashboard.txt
+      - name: Run tests
+        run: python -m pytest -q
+
+  docker-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image (smoke test, not pushed)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: kalshi-trader:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Image contains no secrets or state
+        run: |
+          docker run --rm --entrypoint sh kalshi-trader:ci -c \
+            '! ls /app/.env /app/data/* /app/*.pem /app/*.sqlite* 2>/dev/null | grep -q .'
+      - name: Imports resolve inside the image
+        run: |
+          docker run --rm --entrypoint python \
+            -e API_KEY_ID=ci -e PRIVATE_KEY_PATH=/tmp/x.pem \
+            kalshi-trader:ci -c "import nba_trading.config, nba_trading.dashboard.data, streamlit; print('ok')"
+      - name: Compose file validates
+        env:
+          LITESTREAM_BUCKET: ci
+          LITESTREAM_ACCESS_KEY_ID: ci
+          LITESTREAM_SECRET_ACCESS_KEY: ci
+        run: |
+          touch .env   # env_file must exist; empty is fine for validation
+          docker compose config -q
+
+  # ---------------------------------------------------------------------------
+  # DEPLOY STUB: intentionally disabled (`if: false`). It never runs on push/PR.
+  # To enable: remove `if: false` (or change it to `inputs.deploy`), add the
+  # repository secrets below, and keep it manual (workflow_dispatch only).
+  # Trading code gating real money should be deployed deliberately, so there is
+  # no auto-deploy on push. Never put the Kalshi key or .env in GitHub secrets;
+  # they live only on the server (see docs/deployment.md).
+  #
+  # Needed repo secrets (placeholders):
+  #   DEPLOY_HOST      e.g. 203.0.113.10 or a Tailscale name
+  #   DEPLOY_USER      e.g. deploy
+  #   DEPLOY_SSH_KEY   private key of a deploy-only SSH key
+  # ---------------------------------------------------------------------------
+  deploy:
+    if: false   # replace with: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy }}
+    needs: [test, docker-build]
+    runs-on: ubuntu-latest
+    environment: production   # add required reviewers on this environment
+    steps:
+      - name: Deploy over SSH (placeholder)
+        run: |
+          echo "Example only. Fill in and enable deliberately."
+          # install -m 600 /dev/null key && echo "${{ secrets.DEPLOY_SSH_KEY }}" > key
+          # ssh -i key -o StrictHostKeyChecking=accept-new \
+          #   "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+          #   'cd ~/Kalshi-Trader && git fetch && git checkout ${{ github.sha }} \
+          #    && IMAGE_TAG=${{ github.sha }} docker compose up -d --build'
