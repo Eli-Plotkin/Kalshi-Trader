@@ -160,3 +160,29 @@ class TestComputeLimitPrice:
     def test_high_buffer_clamped_to_cap(self):
         # Ask 95¢ + 10¢ buffer = 105, clamped to 99.
         assert compute_limit_price(95, 10, 99) == 99
+
+
+# --- cap_shares ---
+
+from nba_trading.strategy import cap_shares
+
+
+def test_cap_shares_limited_by_cash():
+    assert cap_shares(500, 90, cash_cents=9_000, equity_cents=1_000_000,
+                      open_cost_cents=0, max_exposure_pct=100) == 100
+
+
+def test_cap_shares_limited_by_exposure_headroom():
+    # equity $1000, cap 30% = $300, $200 already open -> $100 headroom / 90c = 111
+    assert cap_shares(500, 90, cash_cents=100_000, equity_cents=100_000,
+                      open_cost_cents=20_000, max_exposure_pct=30) == 111
+
+
+def test_cap_shares_zero_when_over_cap_or_bad_input():
+    assert cap_shares(50, 90, 100_000, 100_000, 40_000, 30) == 0
+    assert cap_shares(0, 90, 100_000, 100_000, 0, 30) == 0
+    assert cap_shares(50, None, 100_000, 100_000, 0, 30) == 0
+
+
+def test_cap_shares_unchanged_when_within_limits():
+    assert cap_shares(10, 90, 100_000, 100_000, 0, 30) == 10

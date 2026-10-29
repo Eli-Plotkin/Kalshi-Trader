@@ -7,6 +7,7 @@ import os
 
 import pytest
 
+from nba_trading.ledger import Ledger
 from nba_trading.portfolio import HighWaterMark, Portfolio
 
 
@@ -22,14 +23,13 @@ class TestPortfolio:
         assert not p.has_any_positions()
 
     def test_add_position_persists(self, tmp_path):
-        path = tmp_path / "p.json"
-        p = Portfolio(filename=str(path))
+        db = str(tmp_path / "state.sqlite")
+        p = Portfolio(ledger=db)
         p.add_position("KX-NBA-LAL", buy_price=92, shares=10)
         assert p.has_position("KX-NBA-LAL")
         assert p.has_any_positions()
-        # File should now exist with the lot saved.
-        with open(path) as f:
-            data = json.load(f)
+        # The lot is saved in SQLite (visible to a fresh connection).
+        data = Ledger(db).load_portfolio_lots()
         assert "KX-NBA-LAL" in data
         assert data["KX-NBA-LAL"][0]["price"] == 92
         assert data["KX-NBA-LAL"][0]["qty"] == 10
@@ -47,11 +47,12 @@ class TestPortfolio:
         p.remove_position("KX-NOT-THERE")
 
     def test_update_position_qty(self, tmp_path):
-        p = Portfolio(filename=str(tmp_path / "p.json"))
+        db = str(tmp_path / "state.sqlite")
+        p = Portfolio(ledger=db)
         p.add_position("KX-NBA-LAL", 92, 10)
         p.update_position_qty("KX-NBA-LAL", 7)  # partial fill
         # Reload to verify persistence.
-        p2 = Portfolio(filename=p.filename)
+        p2 = Portfolio(ledger=db)
         assert p2._positions["KX-NBA-LAL"][-1]["qty"] == 7
 
     def test_multiple_lots_for_same_ticker(self, tmp_path):
@@ -61,11 +62,11 @@ class TestPortfolio:
         assert len(p._positions["KX-NBA-LAL"]) == 2
 
     def test_state_survives_restart(self, tmp_path):
-        path = tmp_path / "p.json"
-        p1 = Portfolio(filename=str(path))
+        db = str(tmp_path / "state.sqlite")
+        p1 = Portfolio(ledger=db)
         p1.add_position("KX-NBA-LAL", 92, 10)
-        # Simulate restart by creating a new instance against the same file.
-        p2 = Portfolio(filename=str(path))
+        # Simulate restart by creating a new instance against the same database.
+        p2 = Portfolio(ledger=db)
         assert p2.has_position("KX-NBA-LAL")
 
 
@@ -127,10 +128,10 @@ class TestHighWaterMark:
         assert not hw.is_circuit_broken(5_000, max_drawdown_pct=10)
 
     def test_state_persists_across_restart(self, tmp_path):
-        path = tmp_path / "hw.json"
-        hw1 = HighWaterMark(filename=str(path))
+        db = str(tmp_path / "state.sqlite")
+        hw1 = HighWaterMark(ledger=db)
         hw1.update(10_000, has_open_positions=False)
-        hw2 = HighWaterMark(filename=str(path))
+        hw2 = HighWaterMark(ledger=db)
         assert hw2.peak() == 10_000
 
     def test_negative_cash_does_not_set_peak(self, tmp_path):
