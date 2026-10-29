@@ -201,27 +201,38 @@ entirely during downtime but tip-off hasn't happened, it fires immediately.
 ### Entry point
 
 ```bash
-python -m nba_trading.main
+python -m nba_trading.main           # dry-run (default): real data, no orders
+python -m nba_trading.main --live    # places real orders
 ```
 
-### Known gaps (as of 2026-09)
+Dry-run runs the whole pipeline against live Kalshi data but sends no order,
+records no position, and never marks a game fired, so it can't suppress a
+later live run.
 
-- No dry-run/paper mode — every run places real orders if Kalshi credentials
-  are present in the environment. Unlike `agent_trader/` and
-  `sportsbook_sourced/`, there is no flag to rehearse a day's trading safely.
-- `client_order_id` is not set on order placement, so retries (if ever added)
-  would not be idempotent.
-- The game is marked "fired" before the order call resolves, so a
-  crash/timeout during order placement can leave local portfolio state out
-  of sync with the real Kalshi account with no automatic reconciliation.
+### Order safety
+
+- `client_order_id` is deterministic (`nba-<game_id>-<ticker>`), so a
+  re-fired job after a crash is rejected by Kalshi as a duplicate instead of
+  double-buying.
+- Orders go through Kalshi's V2 endpoint (`POST /portfolio/events/orders`);
+  the legacy `/portfolio/orders` path was deprecated in June 2026. A 409 on
+  a repeated `client_order_id` is treated as "already placed" and triggers
+  the same position reconciliation.
+- A game is marked fired only after its job finishes, not on entry.
+- If the order call fails without a definitive rejection (it may have
+  landed), the bot checks Kalshi's positions, records the position if found,
+  and otherwise logs CRITICAL for manual verification. It never retries.
+
+### Known gaps (as of 2026-10)
+
 - No manual halt-file kill switch like `agent_trader/`'s
   `~/.kalshi-agent.halt` — the only way to stop new bets mid-run is the
   drawdown circuit breaker or killing the process.
 - No process supervisor/auto-restart is documented; an unhandled crash in
   the main loop logs and exits rather than recovering.
-
-These are being addressed; see the repo's issue tracker / recent commits for
-current status rather than treating this list as evergreen.
+- No push alerting (email/Slack) on crashes, circuit-breaker trips, or
+  CRITICAL ambiguous-order logs.
+- No portfolio-wide exposure cap; sizing is per-trade only.
 
 ---
 

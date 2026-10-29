@@ -132,6 +132,8 @@ def execute_decision(
 
     if order == "INSUFFICIENT_FUNDS":
         return ExecutionResult(False, decision.action, ticker, client_order_id, None, 0, "insufficient_funds", {})
+    if order == "DUPLICATE_ORDER":
+        return ExecutionResult(False, decision.action, ticker, client_order_id, None, 0, "duplicate_order", {})
     if not order:
         return ExecutionResult(False, decision.action, ticker, client_order_id, None, 0, "api_error", {})
 
@@ -141,7 +143,7 @@ def execute_decision(
         ticker=ticker,
         client_order_id=client_order_id,
         order_id=order.get("order_id"),
-        filled_count=int(order.get("count_filled") or 0),
+        filled_count=int(float(order.get("fill_count") or order.get("count_filled") or 0)),
         reason="placed",
         raw_order_response=order,
     )

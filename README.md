@@ -11,7 +11,7 @@ odds as the fair-value anchor for Kalshi sports markets.
 | `sportsbook_sourced/` | Sportsbook-consensus edge scanner with paper fills, SQLite persistence, and settlement PnL evaluation (CLV evaluation is still scaffolding). | `python -m sportsbook_sourced.cli scan` |
 | `kalshi/` | Signed-request HTTP client and shared credentials. No trading logic. | imported by packages |
 | `agent_trader/` | Frozen LLM-driven research/trading experiment. Kept for reference, not the active path. | `python -m agent_trader.scheduler` |
-| `nba_trading/` | Earlier NBA price-range bot. | `python -m nba_trading.main` |
+| `nba_trading/` | Earlier NBA price-range bot. The only package that places real orders. Dry-run by default. | `python -m nba_trading.main [--live]` |
 | `misprice_discovery/` | Historical research scripts, simulations, and validation helpers. | module-specific scripts |
 
 `sportsbook_sourced/` is intentionally separate from `agent_trader/`. In this

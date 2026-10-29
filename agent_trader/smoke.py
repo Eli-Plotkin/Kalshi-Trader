@@ -102,7 +102,7 @@ def run() -> int:
         runtime.log_step(conn, cycle_id, target.ticker, "smoke_order_placement", {"result": "insufficient_funds"})
         runtime.close_cycle(conn, cycle_id, "aborted", "insufficient_funds")
         return 4
-    if not order or not order.get("order_id"):
+    if not order or isinstance(order, str) or not order.get("order_id"):
         runtime.log_step(conn, cycle_id, target.ticker, "smoke_order_placement", {"result": "api_error", "raw": order})
         runtime.close_cycle(conn, cycle_id, "aborted", "order_placement_api_error")
         return 5
