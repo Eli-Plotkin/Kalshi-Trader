@@ -1,0 +1,14 @@
+# Streamlit settings for the dashboard. Picked up from the working directory (the repo root locally,
+# /app in Dockerfile.frontend). The bind address/port are deliberately NOT set here, so a local
+# `streamlit run` stays on localhost; Dockerfile.frontend passes --server.address=0.0.0.0 itself.
+[server]
+headless = true                  # never try to open a browser (also true on servers)
+enableXsrfProtection = true
+enableCORS = true                # required to be true while XSRF protection is on
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"          # hides the Deploy button and developer menu entries
+showErrorDetails = "none"        # no stack traces / file paths in an internet-facing UI

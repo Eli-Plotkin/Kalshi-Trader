@@ -1,0 +1,48 @@
+# Dashboard-only image for a SEPARATE host (remote mode). It has no Kalshi credentials and cannot
+# trade: it installs only requirements-frontend.txt and copies only what the dashboard imports.
+# Build:  docker build -f Dockerfile.frontend -t kalshi-dashboard .
+# Run:    see docs/frontend-deployment.md (DASHBOARD_PASSWORD and REPLICATION_* are required).
+FROM python:3.13-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONPATH=/app \
+    TZ=UTC \
+    DASHBOARD_MODE=remote \
+    DASHBOARD_DATA_DIR=/data \
+    DASHBOARD_SYNC_SECONDS=10
+
+# curl is only for the HEALTHCHECK; ca-certificates for TLS to the bucket.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --system --gid 10001 app \
+    && useradd --system --uid 10001 --gid app --home-dir /home/app --create-home --shell /usr/sbin/nologin app
+
+WORKDIR /app
+
+COPY requirements-frontend.txt ./
+RUN pip install -r requirements-frontend.txt
+
+# The dashboard imports nba_trading (package; config.py needs strategy_config.py) and nothing else.
+# kalshi/, agent_trader/, deploy/, .env and key files are NOT copied. (The root .dockerignore also
+# keeps .env, *.pem, data/ and the ledger out of the build context.)
+COPY strategy_config.py ./
+COPY nba_trading ./nba_trading
+COPY .streamlit ./.streamlit
+RUN rm -rf nba_trading/tests
+
+# /data holds the synced ledger copy. It is disposable: it is re-downloaded from the bucket.
+RUN mkdir -p /data && chown app:app /data
+USER app
+
+EXPOSE 8501
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl --fail --silent http://127.0.0.1:8501/_stcore/health || exit 1
+
+CMD ["streamlit", "run", "nba_trading/dashboard/app.py", \
+     "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true", \
+     "--browser.gatherUsageStats=false"]
