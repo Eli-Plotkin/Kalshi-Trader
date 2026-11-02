@@ -10,3 +10,4 @@ pandas
 numpy
 matplotlib
 tzdata
+boto3>=1.34

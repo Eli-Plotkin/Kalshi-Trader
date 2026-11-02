@@ -85,3 +85,19 @@ def compute_limit_price(ask_cents, buffer_cents, cap_cents):
     if ask_cents is None or ask_cents <= 0:
         return None
     return min(int(ask_cents) + int(buffer_cents), int(cap_cents))
+
+
+def cap_shares(shares, limit_cents, cash_cents, equity_cents, open_cost_cents, max_exposure_pct):
+    """Limit an order so it is affordable and keeps total exposure under the cap.
+
+    - never spend more than available cash (shares * limit <= cash)
+    - never let open cost + this order exceed max_exposure_pct of equity
+
+    Returns the reduced share count (0 means skip).
+    """
+    if shares <= 0 or limit_cents is None or limit_cents <= 0:
+        return 0
+    by_cash = int(cash_cents // limit_cents)
+    headroom = equity_cents * max_exposure_pct / 100.0 - open_cost_cents
+    by_exposure = int(max(headroom, 0) // limit_cents)
+    return max(min(shares, by_cash, by_exposure), 0)
