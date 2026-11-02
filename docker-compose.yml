@@ -1,0 +1,208 @@
+# Kalshi NBA bot BACKEND: bot + replicator on one small server.
+# The dashboard is a separate deployment (Dockerfile.frontend, docs/frontend-deployment.md); it reads
+# the ledger snapshots this stack publishes to object storage. See docs/deployment.md.
+# Copy .env.example to .env and fill it in first.
+#
+#   docker compose up -d --build        # bot (DRY mode unless BOT_MODE=live) + replicator
+#   docker compose ps / logs -f bot
+#   docker compose --profile local-dashboard up -d    # OPTIONAL dashboard on THIS server (loopback only)
+#   docker compose --profile litestream up -d         # OPTIONAL second backup layer (~1 s)
+#
+name: kalshi
+
+x-app-build: &app-build
+  context: .
+  dockerfile: Dockerfile
+
+x-hardening: &hardening
+  restart: unless-stopped
+  init: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "5"
+
+services:
+  # One-shot: make sure the shared volume is owned by the unprivileged app user
+  # (uid 10001) before anything else touches it. Runs as root, exits immediately.
+  init:
+    image: kalshi-trader:${IMAGE_TAG:-local}
+    build: *app-build
+    user: "0:0"
+    entrypoint: ["sh", "-c", "chown -R 10001:10001 /app/data"]
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+    restart: "no"
+    healthcheck:
+      disable: true
+    volumes:
+      - data:/app/data
+
+  bot:
+    <<: *hardening
+    image: kalshi-trader:${IMAGE_TAG:-local}
+    build: *app-build
+    entrypoint: ["/app/deploy/entrypoint-bot.sh"]
+    working_dir: /app/data            # trade_bot.log lands on the volume
+    mem_limit: 1g                     # a runaway read must not take the whole host down with it
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    env_file:
+      - .env                          # API_KEY_ID, strategy vars, alert vars, ...
+    environment:
+      # Safety: real orders only when BOT_MODE=live AND BOT_LIVE_CONFIRM=LIVE.
+      BOT_MODE: ${BOT_MODE:-dry}
+      BOT_LIVE_CONFIRM: ${BOT_LIVE_CONFIRM:-}
+      # Private key is a read-only bind mount (below); overrides any .env value.
+      PRIVATE_KEY_PATH: /run/secrets/kalshi_private_key.pem
+      # All mutable state lives in the SQLite ledger on the shared volume. The three JSON
+      # paths below are only read once (legacy import on first run); a fresh server has none.
+      LEDGER_FILE: /app/data/nba_ledger.sqlite
+      KILL_SWITCH_FILE: /app/data/STOP_TRADING
+      # The bot polls control/pause.json (a pause requested from the frontend) from the CONTROL bucket
+      # (CONTROL_* in .env; falls back to the REPLICATION_* bucket). A pause is LATCHED locally: only
+      # `python -m nba_trading.control resume` on this server clears it. In live mode the bot refuses to
+      # trade until it has read the control channel once. With no bucket configured only the local
+      # kill-switch file works. The prefix is pinned here so the bot, replicator and frontend can never
+      # resolve different key prefixes (a blank value would otherwise split them):
+      REPLICATION_PREFIX: ${REPLICATION_PREFIX:-kalshi-bot/}
+      CONTROL_PREFIX: ${CONTROL_PREFIX:-${REPLICATION_PREFIX:-kalshi-bot/}}
+      SCHEDULE_FILE: /app/data/schedule_data.json
+      PORTFOLIO_FILE: /app/data/portfolio_data.json
+      HIGH_WATER_FILE: /app/data/high_water_mark.json
+    volumes:
+      - data:/app/data
+      # chown 10001:10001 + chmod 600 on the host file (docs/deployment.md).
+      - ${KALSHI_PRIVATE_KEY_FILE:-./secrets/kalshi_private_key.pem}:/run/secrets/kalshi_private_key.pem:ro
+    healthcheck:
+      # Healthy while the newest heartbeat event (written every 30 min) is < 50 min old.
+      # Read-only SQLite open. Note: Docker only marks the container "unhealthy";
+      # it does not restart it. Use the Healthchecks.io dead-man's switch for alerts.
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import sqlite3, sys
+          from datetime import datetime, timezone
+          try:
+              c = sqlite3.connect("file:/app/data/nba_ledger.sqlite?mode=ro", uri=True, timeout=5)
+              r = c.execute("SELECT max(ts) FROM events WHERE kind='heartbeat'").fetchone()[0]
+              age = (datetime.now(timezone.utc) - datetime.fromisoformat(r)).total_seconds() / 60
+              sys.exit(0 if age < 50 else 1)
+          except Exception:
+              sys.exit(1)
+      interval: 5m
+      timeout: 15s
+      retries: 2
+      start_period: 5m
+
+  # Publishes a consistent snapshot of the ledger to object storage: within ~5 s of any change, and at
+  # least every 10 s as a manifest heartbeat, so a healthy frontend is normally 10-15 s behind (~30 s worst case). Reads the ledger
+  # READ-ONLY (the volume mount has to be writable only because SQLite's WAL needs its -shm file).
+  replicator:
+    <<: *hardening
+    image: kalshi-trader:${IMAGE_TAG:-local}
+    build: *app-build
+    command: ["python", "-m", "nba_trading.replication.publisher"]
+    mem_limit: 512m
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    # Explicit environment, NOT env_file: this container never needs Kalshi credentials.
+    environment:
+      LEDGER_FILE: /app/data/nba_ledger.sqlite
+      REPLICATION_STATUS_FILE: /app/data/replication_status.json
+      REPLICATION_BUCKET: ${REPLICATION_BUCKET:?set REPLICATION_BUCKET in .env (see docs/deployment.md)}
+      REPLICATION_PREFIX: ${REPLICATION_PREFIX:-kalshi-bot/}
+      REPLICATION_ENDPOINT: ${REPLICATION_ENDPOINT:-}
+      REPLICATION_REGION: ${REPLICATION_REGION:-}
+      REPLICATION_ACCESS_KEY_ID: ${REPLICATION_ACCESS_KEY_ID:?set REPLICATION_ACCESS_KEY_ID in .env}
+      REPLICATION_SECRET_ACCESS_KEY: ${REPLICATION_SECRET_ACCESS_KEY:?set REPLICATION_SECRET_ACCESS_KEY in .env}
+      REPLICATION_TICK_SECONDS: ${REPLICATION_TICK_SECONDS:-5}
+      REPLICATION_HEARTBEAT_SECONDS: ${REPLICATION_HEARTBEAT_SECONDS:-10}
+      REPLICATION_KEEP_SNAPSHOTS: ${REPLICATION_KEEP_SNAPSHOTS:-60}
+      REPLICATION_ALERT_AFTER_SECONDS: ${REPLICATION_ALERT_AFTER_SECONDS:-120}
+      ALERT_NTFY_URL: ${ALERT_NTFY_URL:-}
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+      ALERT_MIN_LEVEL: ${ALERT_MIN_LEVEL:-ERROR}
+      ALERT_COOLDOWN_MINUTES: ${ALERT_COOLDOWN_MINUTES:-15}
+    volumes:
+      - data:/app/data
+    healthcheck:
+      # Healthy while the last successful publish (status file) is under 3 minutes old.
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import json, sys
+          from datetime import datetime, timezone
+          try:
+              s = json.load(open("/app/data/replication_status.json"))
+              age = (datetime.now(timezone.utc) - datetime.fromisoformat(s["last_success_at"])).total_seconds()
+              sys.exit(0 if age < 180 else 1)
+          except Exception:
+              sys.exit(1)
+      interval: 1m
+      timeout: 10s
+      retries: 3
+      start_period: 2m
+
+  # OPTIONAL: the dashboard on THIS server instead of (or as well as) a separate frontend host.
+  # Built from the frontend image, reads the ledger file directly, no Kalshi credentials.
+  # Loopback only: reach it via SSH tunnel / Tailscale.
+  local-dashboard:
+    profiles: ["local-dashboard"]
+    <<: *hardening
+    image: kalshi-frontend:${IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    environment:
+      DASHBOARD_MODE: local
+      LEDGER_FILE: /app/data/nba_ledger.sqlite
+      KILL_SWITCH_FILE: /app/data/STOP_TRADING
+    volumes:
+      - data:/app/data
+    ports:
+      - "127.0.0.1:8501:8501"
+
+  # OPTIONAL second layer (~1 s continuous replication of the raw SQLite file). The 30 s snapshots
+  # above are the primary mechanism; enable this only if you want the tighter window.
+  litestream:
+    profiles: ["litestream"]
+    <<: *hardening
+    image: litestream/litestream:0.3.13
+    user: "10001:10001"
+    command: ["replicate", "-config", "/etc/litestream.yml"]
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    environment:
+      LITESTREAM_BUCKET: ${LITESTREAM_BUCKET:?set LITESTREAM_BUCKET in .env}
+      LITESTREAM_PATH: ${LITESTREAM_PATH:-kalshi-ledger}
+      LITESTREAM_ENDPOINT: ${LITESTREAM_ENDPOINT:-}
+      LITESTREAM_REGION: ${LITESTREAM_REGION:-us-east-1}
+      LITESTREAM_ACCESS_KEY_ID: ${LITESTREAM_ACCESS_KEY_ID:?set LITESTREAM_ACCESS_KEY_ID in .env}
+      LITESTREAM_SECRET_ACCESS_KEY: ${LITESTREAM_SECRET_ACCESS_KEY:?set LITESTREAM_SECRET_ACCESS_KEY in .env}
+    volumes:
+      - data:/app/data
+      - ./deploy/litestream.yml:/etc/litestream.yml:ro
+
+volumes:
+  data:
+    name: kalshi_data
