@@ -1,0 +1,10 @@
+# RUNTIME dependencies of the backend image (bot + replicator) ONLY, pinned to the versions the image was
+# verified with. requirements.txt stays the broader developer list (tests, research, plotting).
+# Bump a pin deliberately, run the test suite, then rebuild; the image never floats to "latest".
+APScheduler==3.11.3
+cryptography==50.0.2
+requests==2.34.2
+urllib3==2.8.0
+python-dotenv==1.2.4
+boto3==1.43.124      # S3-compatible bucket (snapshot replication, remote-pause control channel)
+tzdata==2026.6       # zoneinfo (America/New_York) on slim images

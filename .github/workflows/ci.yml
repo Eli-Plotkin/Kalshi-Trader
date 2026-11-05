@@ -78,6 +78,31 @@ jobs:
       - name: Frontend logic tests (pure functions; no trading dependencies)
         run: python -m pytest -q nba_trading/tests/test_freshness.py
 
+  # The backend image installs requirements-backend.txt alone. Prove the bot and replicator import and start
+  # their pure paths with ONLY those packages, so a missing runtime dependency fails here and not on the server.
+  backend-deps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      API_KEY_ID: ci-dummy
+      PRIVATE_KEY_PATH: /tmp/ci-dummy.pem
+      KALSHI_ENV: demo
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-backend.txt
+      - name: Install ONLY the backend runtime requirements
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-backend.txt
+      - name: Bot, replicator, control CLI and restore import (this step can fail)
+        run: |
+          python -c "import nba_trading.main, nba_trading.replication.publisher, nba_trading.replication.restore, nba_trading.control; print('backend imports ok')"
+          python -c "import sys; assert 'streamlit' not in sys.modules; import importlib.util as u; assert not u.find_spec('streamlit')"
+
   docker-build:
     runs-on: ubuntu-latest
     timeout-minutes: 20

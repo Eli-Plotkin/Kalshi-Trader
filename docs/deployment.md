@@ -323,10 +323,11 @@ Frontend variables are listed in [frontend-deployment.md](frontend-deployment.md
 
 | Verified here | Not verified here (do these on the real server) |
 |---|---|
-| Publisher, subscriber, restore, control poller and dashboard against a local-folder "bucket" and a fake S3 client; about 1,420 automated tests | **Docker**: no image has ever been built; the Dockerfiles, compose file and CI are statically checked only |
+| Publisher, subscriber, restore, control poller and dashboard against a local-folder "bucket" and a fake S3 client; about 1,420 automated tests | **Docker**: no image has ever been built (the dev Mac has no container runtime). The first `docker compose up --build` on the server, or the CI `docker-build` job, is the first real build. Image behavior is not covered by the simulation below: the non-root uid 10001, volume ownership via `init`, `cap_drop`, `mem_limit`, the compose healthchecks as run by Docker, and the `curl` HEALTHCHECK |
 | Two independent security/reliability reviews, with every confirmed defect reproduced, fixed and covered by a regression test (the frontend credential could resume trading; a restart could forget a pause; a restored snapshot could carry triggers; clock skew could make the banner lie) | A real S3/R2/B2 bucket: token scoping, consistency, error codes, request costs |
 | A multi-process drill with a hard `SIGKILL`: data age, loss window, restore, and the pause latch under attack and restart | `bootstrap-vps.sh` has never been run; `shellcheck` is not installed here |
 | Compose YAML parses; bootstrap script passes `bash -n`; CI workflow YAML parses | Real order, fill and position payloads from Kalshi: field names are from documentation; the first real fills must be checked |
+| Image contents simulated in clean Python 3.13 venvs: `requirements-backend.txt` / `requirements-frontend.txt` alone, copying only what each Dockerfile copies. The real `entrypoint-bot.sh` (including the `BOT_MODE=live` refusal without `BOT_LIVE_CONFIRM=LIVE`), the bot (dry), the replicator and the Streamlit dashboard (remote mode, login, render, `/_stcore/health`) all ran together against a local-folder bucket | |
 | Kalshi read endpoints against the real (empty) account | Kalshi's location verification for API trading from a hosted server |
 
 Known limits, accepted for now (none lets the frontend trade):

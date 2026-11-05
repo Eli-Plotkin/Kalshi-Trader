@@ -22,11 +22,16 @@ RUN groupadd --system --gid 10001 app \
 WORKDIR /app
 
 # Dependencies first (cached layer unless the requirements change).
-COPY requirements.txt ./
-RUN pip install -r requirements.txt
+COPY requirements-backend.txt ./
+RUN pip install -r requirements-backend.txt
 
-# Application code (see .dockerignore for what is excluded).
-COPY . .
+# Application code: only what the bot and replicator import. Research code (misprice_discovery,
+# sportsbook_sourced, agent_trader), docs and tests are not shipped. (.dockerignore keeps secrets out.)
+COPY strategy_config.py ./
+COPY kalshi ./kalshi
+COPY nba_trading ./nba_trading
+COPY deploy ./deploy
+RUN rm -rf nba_trading/tests
 
 # /app/data is the shared named volume (the SQLite ledger, which holds all durable state; the
 # kill-switch file; the bot log).

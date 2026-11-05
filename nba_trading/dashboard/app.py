@@ -263,12 +263,12 @@ def render():
             st.bar_chart(reasons.set_index("reason")["count"])
         show = st.radio("Show", ["all", "buy", "skip"], horizontal=True)
         dd = decisions if show == "all" else decisions[decisions["action"] == show]
-        st.dataframe(dd.sort_values("ts", ascending=False), use_container_width=True, hide_index=True)
+        st.dataframe(dd.sort_values("ts", ascending=False), width="stretch", hide_index=True)
 
     with tab_trades:
         if not paper.empty:
             st.subheader("Paper trades (dry run)")
-            st.dataframe(paper.sort_values("ts", ascending=False), use_container_width=True, hide_index=True)
+            st.dataframe(paper.sort_values("ts", ascending=False), width="stretch", hide_index=True)
         st.subheader("Orders")
         if trades.empty:
             st.info("No orders yet.")
@@ -276,7 +276,7 @@ def render():
             t = trades.sort_values("ts", ascending=False).copy()
             t["pnl_$"] = t["pnl_cents"] / 100.0
             st.dataframe(t.drop(columns=["pnl_cents", "fee_cents", "cost_cents"]),
-                         use_container_width=True, hide_index=True)
+                         width="stretch", hide_index=True)
 
     with tab_health:
         st.subheader("Recent events")
@@ -284,7 +284,7 @@ def render():
             st.info("No events.")
         else:
             ev = events[events["kind"] != "heartbeat"].sort_values("ts", ascending=False).head(200)
-            st.dataframe(ev, use_container_width=True, hide_index=True)
+            st.dataframe(ev, width="stretch", hide_index=True)
         if not REMOTE:
             st.caption(f"Ledger: `{LEDGER_PATH}`")
 

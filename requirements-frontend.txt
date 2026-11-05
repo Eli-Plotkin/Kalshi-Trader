@@ -1,6 +1,7 @@
 # Dependencies of the deployed (remote-mode) dashboard ONLY. Nothing here can trade: no kalshi
 # client, no cryptography/requests/APScheduler. Used by Dockerfile.frontend (and Streamlit Community Cloud).
-streamlit>=1.37          # st.fragment(run_every=...)
-pandas>=2.0
-boto3>=1.34              # S3-compatible bucket (AWS S3 / Cloudflare R2 / Backblaze B2 / MinIO)
-python-dotenv>=1.0       # nba_trading.config / strategy_config load a .env if one exists
+# Pinned to the versions the dashboard was verified with; bump deliberately and re-run the tests.
+streamlit==1.66.1        # st.fragment(run_every=...), width="stretch"
+pandas==3.1.1
+boto3==1.43.124          # S3-compatible bucket (AWS S3 / Cloudflare R2 / Backblaze B2 / MinIO)
+python-dotenv==1.2.4     # nba_trading.config / strategy_config load a .env if one exists
